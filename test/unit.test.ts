@@ -16,12 +16,14 @@ import { isValidCronExpression, installCronJob } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
 import type { Profile } from '../src/types.js'
 import {
-  TEST_PRIVATE_KEY_PEM,
+  generateTestKeyPair,
   SAMPLE_OCI_CONFIG,
   sampleUsageItems,
   sampleCostItemsAllFree,
   sampleCostItemsWithOverage,
 } from './fixtures.js'
+
+const { privateKeyPem: TEST_PRIVATE_KEY_PEM } = generateTestKeyPair()
 
 // --- config.ts -----------------------------------------------------------
 
@@ -230,34 +232,44 @@ test('installCronJob rejects an invalid cron expression before touching crontab'
 
 const noKeyring = async () => null
 
-test('saveTelegramCredential falls back to a 0600 file when the keyring is unavailable', async (t) => {
+// os.homedir() reads $HOME on POSIX but %USERPROFILE% on Windows — override
+// both so the test is actually isolated to a scratch dir on every platform.
+function withTmpHome(t: { after: (fn: () => void) => void }): string {
   const tmpHome = mkdtempSync(join(tmpdir(), 'oci-cost-cli-test-'))
   const originalHome = process.env.HOME
+  const originalUserProfile = process.env.USERPROFILE
   process.env.HOME = tmpHome
+  process.env.USERPROFILE = tmpHome
   t.after(() => {
     process.env.HOME = originalHome
+    process.env.USERPROFILE = originalUserProfile
     rmSync(tmpHome, { recursive: true, force: true })
   })
+  return tmpHome
+}
+
+test('saveTelegramCredential falls back to a 0600 file when the keyring is unavailable', async (t) => {
+  withTmpHome(t)
 
   const result = await saveTelegramCredential({ botToken: 'test-token-123456', chatId: '999' }, noKeyring)
   assert.equal(result.storedIn, 'file')
 
-  const { statSync } = await import('node:fs')
-  const stat = statSync(configFilePath())
-  assert.equal(stat.mode & 0o777, 0o600)
+  // POSIX mode bits (0600) are only meaningful on POSIX filesystems —
+  // Windows/NTFS has no equivalent concept, and Node's chmod there mostly
+  // just toggles the read-only attribute (stat().mode comes back as the
+  // OS default, e.g. 0o666), not a real permission restriction.
+  if (process.platform !== 'win32') {
+    const { statSync } = await import('node:fs')
+    const stat = statSync(configFilePath())
+    assert.equal(stat.mode & 0o777, 0o600)
+  }
 
   const loaded = await loadTelegramCredential(noKeyring)
   assert.deepEqual(loaded, { botToken: 'test-token-123456', chatId: '999' })
 })
 
 test('loadTelegramCredential returns null when nothing is stored', async (t) => {
-  const tmpHome = mkdtempSync(join(tmpdir(), 'oci-cost-cli-test-'))
-  const originalHome = process.env.HOME
-  process.env.HOME = tmpHome
-  t.after(() => {
-    process.env.HOME = originalHome
-    rmSync(tmpHome, { recursive: true, force: true })
-  })
+  withTmpHome(t)
 
   const loaded = await loadTelegramCredential(noKeyring)
   assert.equal(loaded, null)
