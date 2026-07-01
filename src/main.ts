@@ -18,6 +18,7 @@
 //   oci-cost-cli config set-telegram --token <t> --chat-id <c> [--dry-run]
 //   oci-cost-cli config show
 //   oci-cost-cli config clear [--dry-run]
+//   oci-cost-cli update [--apply] [--dry-run]
 //   oci-cost-cli --version | -v
 //   oci-cost-cli --help | -h
 
@@ -34,6 +35,7 @@ import {
   wouldStoreInKeyring,
   maskToken,
 } from './credentials.js'
+import { fetchLatestVersion, compareVersions, realNpmInstallRunner } from './update.js'
 import type { AggregatedLineItem, Profile, ProfileUsageResult, UsageQueryRange } from './types.js'
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -106,6 +108,13 @@ function parseQueryFlags(argv: string[], startAt = 0): QueryOptions {
     else if (a === '--no-color') process.env.NO_COLOR = '1'
   }
   return o
+}
+
+function readPkg(): { name: string; version: string } {
+  // Read package.json via fs rather than a JSON import-attribute (Node
+  // 18's `assert`/`with` support is inconsistent across patch versions).
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json')
+  return JSON.parse(readFileSync(pkgPath, 'utf8')) as { name: string; version: string }
 }
 
 function resolveProfiles(all: Map<string, Profile>, wanted: string[]): Profile[] {
@@ -365,6 +374,49 @@ async function runConfig(argv: string[]): Promise<number> {
   return 1
 }
 
+/**
+ * Bare `update` only checks and reports — it never touches global npm
+ * packages by itself, matching every other side-effecting subcommand's
+ * --dry-run-by-default spirit. `--apply` is required to actually install;
+ * `--apply --dry-run` previews the exact npm command without running it.
+ */
+async function runUpdate(argv: string[]): Promise<number> {
+  const apply = argv.includes('--apply')
+  const dryRun = argv.includes('--dry-run')
+  const pkg = readPkg()
+
+  let latest: string
+  try {
+    latest = await fetchLatestVersion(pkg.name)
+  } catch (e) {
+    console.error(`could not check npm registry for updates: ${errMessage(e)}`)
+    return 1
+  }
+
+  if (compareVersions(pkg.version, latest) >= 0) {
+    console.log(`✓ already up to date (${pkg.version})`)
+    return 0
+  }
+
+  console.log(`update available: ${pkg.version} → ${latest}`)
+  if (!apply) {
+    console.log(`run 'oci-cost-cli update --apply' to install, or manually: npm install -g ${pkg.name}@${latest}`)
+    return 0
+  }
+  if (dryRun) {
+    console.log(`[dry-run] would run: npm install -g ${pkg.name}@${latest}`)
+    return 0
+  }
+
+  const result = realNpmInstallRunner(pkg.name, latest)
+  if (!result.ok) {
+    console.error(`npm install failed:\n${result.output}`)
+    return 1
+  }
+  console.log(`✓ updated to ${latest}`)
+  return 0
+}
+
 function printHelp(): void {
   console.log(`oci-cost-cli — OCI cost/usage/outbound-traffic summary across multiple profiles
 
@@ -375,11 +427,13 @@ Usage:
   oci-cost-cli config set-telegram --token <t> --chat-id <c> [--dry-run]
   oci-cost-cli config show
   oci-cost-cli config clear [--dry-run]
+  oci-cost-cli update [--apply] [--dry-run]
   oci-cost-cli --version | -v
   oci-cost-cli --help | -h
 
 Presets: free-tier, compute, storage, network
---json is an alias for --output json. --raw only applies to --output json.`)
+--json is an alias for --output json. --raw only applies to --output json.
+update checks npm for a newer version; --apply installs it (npm install -g), --dry-run previews.`)
 }
 
 async function main(): Promise<number> {
@@ -390,11 +444,7 @@ async function main(): Promise<number> {
     return 0
   }
   if (argv[0] === '-v' || argv[0] === '--version') {
-    // Read package.json via fs rather than a JSON import-attribute (Node
-    // 18's `assert`/`with` support is inconsistent across patch versions).
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json')
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version: string }
-    console.log(pkg.version)
+    console.log(readPkg().version)
     return 0
   }
 
@@ -402,6 +452,7 @@ async function main(): Promise<number> {
     if (argv[0] === 'report') return await runReport(argv.slice(1))
     if (argv[0] === 'install-cron') return await runInstallCron(argv.slice(1))
     if (argv[0] === 'config') return await runConfig(argv.slice(1))
+    if (argv[0] === 'update') return await runUpdate(argv.slice(1))
     return await runQuery(argv)
   } catch (e) {
     console.error(errMessage(e))
