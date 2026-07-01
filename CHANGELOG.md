@@ -1,0 +1,13 @@
+# Changelog
+
+## [0.2.0](https://github.com/abruption/oci-cost-cli/compare/v0.1.0...v0.2.0) (2026-07-01)
+
+
+### Features
+
+* initial implementation of oci-cost-cli ([1a77b16](https://github.com/abruption/oci-cost-cli/commit/1a77b16b6ce49faf87cbb46bd7b9d3698512b7be))
+
+
+### Bug Fixes
+
+* generate test RSA key at runtime, fix Windows CI failures ([#1](https://github.com/abruption/oci-cost-cli/issues/1)) ([#2](https://github.com/abruption/oci-cost-cli/issues/2)) ([1e915c0](https://github.com/abruption/oci-cost-cli/commit/1e915c042215a8881bf8222ae68440b1ba0570c4))
