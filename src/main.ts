@@ -28,11 +28,26 @@ import { sendTelegram } from './telegram.js'
 import { installCronJob } from './cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, deleteTelegramCredential, maskToken } from './credentials.js'
 import type { AggregatedLineItem, Profile, ProfileUsageResult, UsageQueryRange } from './types.js'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+/**
+ * Node's AggregateError (e.g. thrown by `net.connect`'s Happy Eyeballs
+ * dual-stack IPv4/IPv6 connection attempts on ETIMEDOUT/ECONNREFUSED) very
+ * often has an EMPTY top-level `.message` — the real detail lives in
+ * `.errors[]`. Using `e.message` blindly there prints a blank line and the
+ * process just silently exits 1. Found via a real macOS network timeout
+ * hitting the Telegram API during `report`.
+ */
+export const errMessage = (e: unknown): string => {
+  if (e instanceof AggregateError) {
+    const inner = e.errors.map((err) => errMessage(err)).join('; ')
+    return e.message || inner || e.constructor.name
+  }
+  if (e instanceof Error) return e.message || e.constructor.name
+  return String(e)
+}
 
 interface QueryOptions {
   profiles: string[]
@@ -310,4 +325,23 @@ async function main(): Promise<number> {
   }
 }
 
-main().then((code) => process.exit(code))
+// Only run the CLI when this file is executed directly (as the `bin` entry
+// point) — guarded so `errMessage` etc. can be imported for unit testing
+// without triggering a full CLI run + process.exit(). Both sides go
+// through realpathSync: import.meta.url is already symlink-resolved by
+// Node's ESM loader, but a bare `resolve(argv[1])` is not — npm's global
+// `bin` entries (and, in this dev environment, even the project directory
+// itself) are frequently symlinks, so comparing un-resolved paths here
+// silently breaks the installed CLI entirely (verified empirically).
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1])
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule()) {
+  main().then((code) => process.exit(code))
+}
