@@ -1,0 +1,41 @@
+name: Publish (manual)
+
+# On-demand npm publish for a specific tag, decoupled from release-please's
+# own release-creation detection. Needed because release-please only runs
+# its publish steps on the exact run where it *creates* the GitHub Release;
+# if that same run's `npm publish` step fails (e.g. a bad NPM_TOKEN) after
+# the release/tag already exist, simply re-running the workflow finds
+# "nothing new to release" and skips publish entirely. This workflow lets
+# a maintainer retry the publish step alone, against an already-tagged
+# release, once the underlying problem (token, registry outage, etc.) is
+# fixed.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git tag to publish (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
