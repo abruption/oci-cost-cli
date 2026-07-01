@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.cache/
+
+# local-only project notes (not published)
+CLAUDE.md
+
+dist/
+*.tsbuildinfo
