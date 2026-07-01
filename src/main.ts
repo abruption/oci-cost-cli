@@ -181,32 +181,53 @@ async function runQuery(argv: string[]): Promise<number> {
   return 0
 }
 
+const CURRENCY_EMOJI: Record<string, string> = { USD: '💵', SGD: '💵', EUR: '💶', GBP: '💷', JPY: '💴' }
+
 function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): string {
-  const lines: string[] = ['<b>OCI Cost Report</b>']
+  const rangeLabel = o.lastMonth ? 'Last month' : o.month ? o.month : 'This month'
+  const lines: string[] = [`📊 <b>OCI Cost Report</b>  <i>(${escapeHtml(rangeLabel)})</i>`]
+
   for (const r of results) {
     lines.push('')
-    lines.push(`<b>${escapeHtml(r.profileName)}</b> (${escapeHtml(r.region)})`)
+    lines.push(`━━━━━━━━━━━━━━━`)
+    lines.push(`🌐 <b>${escapeHtml(r.profileName)}</b>  <code>${escapeHtml(r.region)}</code>`)
+
     if (r.error) {
-      lines.push(`✗ ${escapeHtml(r.error)}`)
+      lines.push(`❌ ${escapeHtml(r.error)}`)
       continue
     }
+
     const items: AggregatedLineItem[] =
       o.preset === 'free-tier' ? freeTierOffenders(r.lineItems) : r.lineItems
+
     if (o.preset === 'free-tier') {
-      lines.push(items.length === 0 ? '✅ all items within Free Tier' : `⚠️ ${items.length} item(s) outside Free Tier`)
+      lines.push(
+        items.length === 0
+          ? '✅ All items within Free Tier'
+          : `🚨 ${items.length} item(s) outside Free Tier eligibility`,
+      )
+      for (const it of items.slice(0, 5)) {
+        const amount = it.cost !== null && it.currency !== null ? `${it.cost.toFixed(2)} ${it.currency}` : '?'
+        lines.push(`   • ${escapeHtml(it.service)} / ${escapeHtml(it.skuName)} — ${escapeHtml(amount)}`)
+      }
     } else {
       const totalsByCurrency = new Map<string, number>()
       for (const it of items) {
         if (it.cost === null || it.currency === null) continue
         totalsByCurrency.set(it.currency, (totalsByCurrency.get(it.currency) ?? 0) + it.cost)
       }
-      for (const [currency, amount] of totalsByCurrency) {
-        lines.push(`Cost: ${amount.toFixed(2)} ${currency}`)
+      if (totalsByCurrency.size === 0) {
+        lines.push('💤 No cost data for this period')
       }
-      if (r.costApiFailed) lines.push('⚠️ Cost API failed — totals above may be incomplete')
-      lines.push(`Outbound: ${r.outboundGB.toFixed(3)} GB`)
+      for (const [currency, amount] of totalsByCurrency) {
+        const emoji = CURRENCY_EMOJI[currency] ?? '💰'
+        lines.push(`${emoji} ${amount.toFixed(2)} ${escapeHtml(currency)}`)
+      }
+      if (r.costApiFailed) lines.push('⚠️ <i>Cost API failed — totals above may be incomplete</i>')
+      lines.push(`📤 Outbound: <b>${r.outboundGB.toFixed(3)} GB</b>`)
     }
   }
+
   return lines.join('\n')
 }
 
