@@ -58,7 +58,8 @@ npx oci-cost-cli --profile DEFAULT
 npx oci-cost-cli --month 2026-06
 npx oci-cost-cli --last-month
 
-# Machine-readable output for scripting
+# Machine-readable output for scripting (--json is a shorthand for --output json)
+npx oci-cost-cli --output json
 npx oci-cost-cli --json
 ```
 
@@ -114,6 +115,64 @@ If something starts incurring real cost, it's called out explicitly instead of b
 ```
 
 Other built-in presets: `--preset compute`, `--preset storage`, `--preset network`. Combine with `--service <name>` (repeatable) for an arbitrary custom filter. Filtering happens on already-fetched data — it never triggers an extra API call.
+
+## Machine-readable / agent-first output
+
+`--output json` (alias: `--json`) prints the aggregated `lineItems` this tool already trusts — the same data the text table renders from:
+
+```bash
+npx oci-cost-cli --output json --profile DEFAULT
+```
+
+```json
+[
+  {
+    "profile": "DEFAULT",
+    "tenancy": "ocid1.tenancy.oc1..aaaa...",
+    "region": "ap-chuncheon-1",
+    "costApiFailed": false,
+    "error": null,
+    "outboundGB": 11.559428631747,
+    "lineItems": [
+      { "service": "Compute", "skuName": "Standard - A1", "unit": "OCPU Per Hour", "quantity": 689.48, "cost": 0, "currency": "SGD", "isFreeTierSku": false }
+    ]
+  }
+]
+```
+
+Add `--raw` to also include the **unaggregated** USAGE/COST API responses this tool's aggregation is built from — for a consumer (e.g. an agent) that would rather apply its own logic than trust the heuristics documented below in "Aggregation caveats":
+
+```bash
+npx oci-cost-cli --output json --raw --profile DEFAULT
+```
+
+```json
+[
+  {
+    "profile": "DEFAULT",
+    "...": "... same fields as above ...",
+    "raw": {
+      "usage": [{ "service": "Compute", "skuName": "Standard - A1", "skuPartNumber": "B93297", "unit": "OCPU Per Hour", "computedQuantity": 689.48, "computedAmount": 0, "currency": null }],
+      "cost": [{ "service": "Compute", "skuName": "Standard - A1", "skuPartNumber": "B93297", "unit": null, "computedQuantity": null, "computedAmount": 0, "currency": "SGD" }]
+    }
+  }
+]
+```
+
+`--raw` has genuinely caught a real OCI quirk: some Cost API line items come back with a **blank-string** (not empty/absent) `currency`, which the aggregation layer correctly treats as "no cost data" (`cost: null`) — `raw` is what lets you see *why* a `lineItems` entry has a null cost instead of just the null.
+
+`--raw` only affects `--output json`; it's a no-op in the default text output.
+
+## Preview before you commit: --dry-run
+
+Every command with a real side effect (sending a Telegram message, writing to the OS keyring/a config file, editing your crontab) supports `--dry-run`, so you (or an agent driving this CLI) can see exactly what would happen first:
+
+```bash
+npx oci-cost-cli report --preset free-tier --dry-run          # builds the message from real OCI data, never calls Telegram
+npx oci-cost-cli config set-telegram --token x --chat-id y --dry-run   # reports keyring vs file, never writes
+npx oci-cost-cli config clear --dry-run                        # reports what would be removed, never deletes
+npx oci-cost-cli install-cron --cron "0 0 15 * *" --dry-run -- report  # reports the line that would be added, never touches crontab
+```
 
 ## Telegram reports + cron
 
