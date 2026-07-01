@@ -221,6 +221,7 @@ export async function queryUsageAndCost(
     lineItems,
     outboundGB,
     costApiFailed: costRes.failed,
+    raw: { usage: usageRes.items, cost: costRes.items },
   }
 }
 

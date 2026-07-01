@@ -53,6 +53,11 @@ export interface ProfileUsageResult {
   outboundGB: number
   costApiFailed: boolean
   error?: string
+  /** Unaggregated USAGE + COST API responses, exposed via --raw for
+   *  consumers that don't want this tool's aggregation heuristics
+   *  (currency preference, free-tier detection, outbound-transfer
+   *  matching — all documented as best-effort in the README) applied. */
+  raw?: { usage: UsageLineItem[]; cost: UsageLineItem[] }
 }
 
 export interface TelegramCredential {
