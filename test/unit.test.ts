@@ -14,6 +14,7 @@ import { aggregateUsageAndCost, isFreeTierSkuName, monthRange, lastMonthRange } 
 import { applyFilters, freeTierOffenders, filterByServices } from '../src/presets.js'
 import { isValidCronExpression, installCronJob } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
+import { fetchLatestVersion, compareVersions } from '../src/update.js'
 import { errMessage } from '../src/main.js'
 import type { Profile } from '../src/types.js'
 import {
@@ -306,4 +307,34 @@ test('errMessage unpacks AggregateError.errors when the top-level message is bla
 test('errMessage prefers a non-empty AggregateError.message when present', () => {
   const agg = new AggregateError([new Error('inner')], 'outer message')
   assert.equal(errMessage(agg), 'outer message')
+})
+
+// --- update.ts -------------------------------------------------------------
+
+test('compareVersions orders by major, then minor, then patch', () => {
+  assert.equal(compareVersions('0.3.0', '0.3.0'), 0)
+  assert.equal(compareVersions('0.3.0', '0.3.1'), -1)
+  assert.equal(compareVersions('0.3.1', '0.3.0'), 1)
+  assert.equal(compareVersions('0.3.0', '0.4.0'), -1)
+  assert.equal(compareVersions('1.0.0', '0.99.99'), 1)
+})
+
+test('compareVersions treats a missing/non-numeric segment as 0', () => {
+  assert.equal(compareVersions('0.3', '0.3.0'), 0)
+  assert.equal(compareVersions('0.3', '0.3.1'), -1)
+})
+
+test('fetchLatestVersion returns whatever the injected fetcher resolves, without touching the network', async () => {
+  const version = await fetchLatestVersion('oci-cost-cli', async (name) => {
+    assert.equal(name, 'oci-cost-cli')
+    return '9.9.9'
+  })
+  assert.equal(version, '9.9.9')
+})
+
+test('fetchLatestVersion propagates a rejected fetcher', async () => {
+  await assert.rejects(
+    () => fetchLatestVersion('oci-cost-cli', async () => Promise.reject(new Error('registry unreachable'))),
+    /registry unreachable/,
+  )
 })
