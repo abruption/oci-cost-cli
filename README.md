@@ -197,6 +197,18 @@ npx oci-cost-cli install-cron --cron "0 0 15 * *" -- report --preset free-tier
 
 `--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything.
 
+## Checking for updates
+
+If installed globally (rather than run via `npx`, which always fetches the latest anyway), `update` checks npm for a newer release:
+
+```bash
+oci-cost-cli update              # check only — prints "already up to date" or the available version
+oci-cost-cli update --apply           # actually run npm install -g to update
+oci-cost-cli update --apply --dry-run # preview the exact npm command without running it
+```
+
+Bare `update` never touches your global npm packages — same `--dry-run`-by-default spirit as every other side-effecting subcommand. `--apply` is required to actually install.
+
 ## What this is (and isn't)
 
 `oci-cost-cli` is a **companion** to the official `oci` CLI for a fast, human-readable check — not a replacement for full resource management. If you need anything beyond cost/usage reporting, reach for the official CLI or SDK.
