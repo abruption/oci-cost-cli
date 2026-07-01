@@ -1,14 +1,15 @@
 name: Release
 
 # Fully automated releases via release-please:
-#  1. Every push to main updates a "release PR" (version bump + CHANGELOG from
-#     Conventional Commits).
+#  1. Every push to master (i.e. every develop -> master PR merge) updates a
+#     "release PR" (version bump + CHANGELOG from Conventional Commits).
 #  2. Merging that PR creates the GitHub Release + tag, then this same run
 #     publishes to npm with provenance.
-# No manual `npm version` needed.
+# No manual `npm version` needed. Only runs off master — develop and
+# feat/fix/docs/chore branches never trigger a release.
 on:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: write
