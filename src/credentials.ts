@@ -136,6 +136,14 @@ export async function deleteTelegramCredential(
   if (existsSync(path)) rmSync(path)
 }
 
+/** Probes which storage tier a save would use, without writing anything —
+ *  used by `config set-telegram --dry-run`. */
+export async function wouldStoreInKeyring(
+  keyring: () => Promise<KeyringImpl | null> = loadRealKeyring,
+): Promise<boolean> {
+  return (await keyring()) !== null
+}
+
 export function maskToken(value: string): string {
   if (value.length <= 8) return '*'.repeat(value.length)
   return `${value.slice(0, 4)}${'*'.repeat(value.length - 8)}${value.slice(-4)}`

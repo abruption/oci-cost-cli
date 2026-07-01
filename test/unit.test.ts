@@ -14,6 +14,7 @@ import { aggregateUsageAndCost, isFreeTierSkuName, monthRange, lastMonthRange } 
 import { applyFilters, freeTierOffenders, filterByServices } from '../src/presets.js'
 import { isValidCronExpression, installCronJob } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
+import { errMessage } from '../src/main.js'
 import type { Profile } from '../src/types.js'
 import {
   generateTestKeyPair,
@@ -280,4 +281,29 @@ test('maskToken never reveals the middle of a secret', () => {
   assert.equal(masked.slice(4, -4), '*'.repeat(masked.length - 8))
   assert.equal(masked.slice(0, 4), '1234')
   assert.equal(masked.slice(-4), '2345')
+})
+
+// --- main.ts errMessage ---------------------------------------------------
+
+test('errMessage never returns an empty string for a plain Error', () => {
+  assert.equal(errMessage(new Error('boom')), 'boom')
+})
+
+test('errMessage falls back to the constructor name for a blank-message Error', () => {
+  assert.equal(errMessage(new Error('')), 'Error')
+})
+
+test('errMessage unpacks AggregateError.errors when the top-level message is blank', () => {
+  // Reproduces the real bug: Node's dual-stack connect() failures (e.g.
+  // ETIMEDOUT hit live during a macOS Telegram-send test) throw an
+  // AggregateError whose own .message is '' — the detail lives in .errors.
+  const agg = new AggregateError([new Error('connect ETIMEDOUT 1.2.3.4:443'), new Error('connect ETIMEDOUT [::1]:443')], '')
+  const msg = errMessage(agg)
+  assert.notEqual(msg, '')
+  assert.match(msg, /ETIMEDOUT/)
+})
+
+test('errMessage prefers a non-empty AggregateError.message when present', () => {
+  const agg = new AggregateError([new Error('inner')], 'outer message')
+  assert.equal(errMessage(agg), 'outer message')
 })
