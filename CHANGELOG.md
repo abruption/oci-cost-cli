@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/abruption/oci-cost-cli/compare/v0.2.0...v0.3.0) (2026-07-01)
+
+
+### Features
+
+* agent-friendly CLI options and Telegram formatting (v0.3.0) ([#11](https://github.com/abruption/oci-cost-cli/issues/11)) ([23e05e8](https://github.com/abruption/oci-cost-cli/commit/23e05e8a810ad814986f9a9c955ff555e6f916f1))
+
 ## [0.2.0](https://github.com/abruption/oci-cost-cli/compare/v0.1.0...v0.2.0) (2026-07-01)
 
 
