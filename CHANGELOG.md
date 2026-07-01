@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/abruption/oci-cost-cli/compare/v0.3.0...v0.4.0) (2026-07-01)
+
+
+### Features
+
+* add update subcommand for self-updating via npm (v0.4.0) ([#15](https://github.com/abruption/oci-cost-cli/issues/15)) ([d3ba868](https://github.com/abruption/oci-cost-cli/commit/d3ba868c7687d65d64bb4631ab2239db53b048fe))
+
 ## [0.3.0](https://github.com/abruption/oci-cost-cli/compare/v0.2.0...v0.3.0) (2026-07-01)
 
 
