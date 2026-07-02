@@ -15,7 +15,7 @@ import { applyFilters, freeTierOffenders, filterByServices } from '../src/preset
 import { isValidCronExpression, installCronJob } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
 import { fetchLatestVersion, compareVersions } from '../src/update.js'
-import { errMessage } from '../src/main.js'
+import { errMessage, resolveHelpTarget } from '../src/main.js'
 import type { Profile } from '../src/types.js'
 import {
   generateTestKeyPair,
@@ -337,4 +337,44 @@ test('fetchLatestVersion propagates a rejected fetcher', async () => {
     () => fetchLatestVersion('oci-cost-cli', async () => Promise.reject(new Error('registry unreachable'))),
     /registry unreachable/,
   )
+})
+
+// --- main.ts: resolveHelpTarget ---------------------------------------------
+// Regression coverage for https://github.com/abruption/oci-cost-cli/issues/17 —
+// -h/--help was only checked at argv[0], so subcommand parsers silently
+// dropped it and ran for real (report sent a live Telegram message;
+// config clear deleted the stored credential).
+
+test('resolveHelpTarget returns null when no help flag is present', () => {
+  assert.equal(resolveHelpTarget([]), null)
+  assert.equal(resolveHelpTarget(['--profile', 'DEFAULT']), null)
+  assert.equal(resolveHelpTarget(['report', '--dry-run']), null)
+})
+
+test('resolveHelpTarget returns "general" for a bare -h/--help', () => {
+  assert.equal(resolveHelpTarget(['-h']), 'general')
+  assert.equal(resolveHelpTarget(['--help']), 'general')
+})
+
+test('resolveHelpTarget targets the subcommand even when --help is not argv[0]', () => {
+  assert.equal(resolveHelpTarget(['report', '--help']), 'report')
+  assert.equal(resolveHelpTarget(['report', '-h']), 'report')
+  assert.equal(resolveHelpTarget(['report', '--profile', 'DEFAULT', '--help']), 'report')
+  assert.equal(resolveHelpTarget(['install-cron', '--help']), 'install-cron')
+  assert.equal(resolveHelpTarget(['config', '--help']), 'config')
+  assert.equal(resolveHelpTarget(['update', '--help']), 'update')
+})
+
+test('resolveHelpTarget catches the two destructive-side-effect cases from issue #17', () => {
+  // report --help must not fall through to querying OCI + sending Telegram
+  assert.equal(resolveHelpTarget(['report', '--help']), 'report')
+  // config clear --help must not fall through to deleting the stored credential
+  assert.equal(resolveHelpTarget(['config', 'clear', '--help']), 'config')
+  // update --apply --help must not fall through to running npm install -g
+  assert.equal(resolveHelpTarget(['update', '--apply', '--help']), 'update')
+})
+
+test('resolveHelpTarget falls back to "general" for an unrecognized leading token', () => {
+  assert.equal(resolveHelpTarget(['--profile', 'DEFAULT', '--help']), 'general')
+  assert.equal(resolveHelpTarget(['bogus-subcommand', '--help']), 'general')
 })
