@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/abruption/oci-cost-cli/compare/v0.4.0...v0.4.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* honor -h/--help anywhere in argv before any subcommand runs ([#19](https://github.com/abruption/oci-cost-cli/issues/19)) ([f11f59a](https://github.com/abruption/oci-cost-cli/commit/f11f59aca0237baac7e4a4c18d2f3a15d21fc40e))
+
 ## [0.4.0](https://github.com/abruption/oci-cost-cli/compare/v0.3.0...v0.4.0) (2026-07-01)
 
 
