@@ -17,9 +17,21 @@ function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-/** UTC month range for `monthStr` (YYYY-MM), or the current month-to-date if omitted. */
+const MONTH_STR_RE = /^\d{4}-(0[1-9]|1[0-2])$/
+
+/**
+ * UTC month range for `monthStr` (YYYY-MM, zero-padded), or the current
+ * month-to-date if omitted. Rejects out-of-range/malformed input instead of
+ * letting `Date.UTC`'s month-overflow normalization silently roll it into a
+ * different (but plausible-looking) range — e.g. `2026-13` would otherwise
+ * silently become Jan-Feb 2027 with no error, which is the worst kind of bug
+ * for a cost-reporting tool.
+ */
 export function monthRange(monthStr?: string): UsageQueryRange {
   const now = new Date()
+  if (monthStr !== undefined && !MONTH_STR_RE.test(monthStr)) {
+    throw new Error(`invalid --month '${monthStr}' — expected format YYYY-MM with month 01-12`)
+  }
   const [year, month] = monthStr
     ? monthStr.split('-').map((s) => parseInt(s, 10))
     : [now.getUTCFullYear(), now.getUTCMonth() + 1]
