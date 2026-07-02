@@ -14,6 +14,20 @@ export function isValidCronExpression(expr: string): boolean {
   return fields.every((f) => CRON_FIELD.test(f))
 }
 
+/**
+ * Quote a single argv token for safe inclusion in a POSIX shell command
+ * line. Crontab entries are executed via `sh -c`, so joining trailing argv
+ * tokens with a bare space (as `install-cron` used to) both (a) lets shell
+ * metacharacters in a token be interpreted by cron every time the job fires
+ * — a command-injection vector — and (b) loses the original argv boundary
+ * for any token containing whitespace, silently corrupting it when cron
+ * re-splits the line. Always-quoting (even already-"safe" tokens) keeps the
+ * logic simple and avoids having to enumerate "dangerous" characters.
+ */
+export function shellQuoteArg(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
 export interface CrontabIO {
   read(): string
   write(content: string): void
