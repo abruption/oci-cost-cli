@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/abruption/oci-cost-cli/compare/v0.4.1...v0.4.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* shell-quote crontab command args and validate --month range ([#25](https://github.com/abruption/oci-cost-cli/issues/25)) ([9b1a751](https://github.com/abruption/oci-cost-cli/commit/9b1a751576ccf03b317774597ab11cfe7217d9fe))
+
 ## [0.4.1](https://github.com/abruption/oci-cost-cli/compare/v0.4.0...v0.4.1) (2026-07-02)
 
 
