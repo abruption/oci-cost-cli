@@ -27,7 +27,7 @@ import { queryMultiProfile, monthRange, lastMonthRange } from './usage.js'
 import { applyFilters, freeTierOffenders } from './presets.js'
 import { renderProfileSection, renderFreeTierSummary } from './render.js'
 import { sendTelegram } from './telegram.js'
-import { installCronJob } from './cron-install.js'
+import { installCronJob, shellQuoteArg } from './cron-install.js'
 import {
   saveTelegramCredential,
   loadTelegramCredential,
@@ -279,6 +279,23 @@ async function runReport(argv: string[]): Promise<number> {
   return 0
 }
 
+/**
+ * Builds the shell-safe command line written into the crontab by
+ * `install-cron`. Each token (including the node binary and script path,
+ * which can themselves contain spaces on some installs) is individually
+ * shell-quoted rather than joined with a bare space — see
+ * `shellQuoteArg`'s doc comment for why. `execPath`/`scriptPath` are
+ * injectable (default to the real `process.*` values) so this is directly
+ * unit-testable without depending on the actual running process.
+ */
+export function buildScheduledCommand(
+  trailingArgs: string[],
+  execPath: string = process.execPath,
+  scriptPath: string = process.argv[1] ?? '',
+): string {
+  return [execPath, scriptPath, ...trailingArgs].map(shellQuoteArg).join(' ')
+}
+
 async function runInstallCron(argv: string[]): Promise<number> {
   let cronExpr: string | null = null
   let dryRun = false
@@ -300,7 +317,7 @@ async function runInstallCron(argv: string[]): Promise<number> {
     return 1
   }
   const trailing = argv.slice(sepIndex + 1)
-  const command = `${process.execPath} ${process.argv[1]} ${trailing.join(' ')}`.trim()
+  const command = buildScheduledCommand(trailing)
 
   try {
     const result = installCronJob(cronExpr, command, undefined, dryRun)

