@@ -436,11 +436,77 @@ Presets: free-tier, compute, storage, network
 update checks npm for a newer version; --apply installs it (npm install -g), --dry-run previews.`)
 }
 
+const SUBCOMMAND_HELP: Record<string, string> = {
+  report: `oci-cost-cli report — send the cost/usage report to Telegram once
+
+Usage:
+  oci-cost-cli report [--profile <name>]... [--month YYYY-MM | --last-month] [--preset <name>] [--service <name>]... [--telegram-token <t> --telegram-chat-id <c>] [--dry-run]
+
+Same query flags as the base command, formatted for Telegram (HTML). Uses the
+stored credential (see 'oci-cost-cli config set-telegram') unless
+--telegram-token/--telegram-chat-id are passed explicitly.
+--dry-run prints the message that would be sent instead of sending it.`,
+  'install-cron': `oci-cost-cli install-cron — schedule a command in the system crontab
+
+Usage:
+  oci-cost-cli install-cron --cron "<5-field expr>" [--dry-run] -- <subcommand> [flags]
+
+Example:
+  oci-cost-cli install-cron --cron "0 0 15 * *" -- report
+
+--dry-run previews the crontab line without writing it. A line that is
+already present is not duplicated.`,
+  config: `oci-cost-cli config — manage the stored Telegram credential
+
+Usage:
+  oci-cost-cli config set-telegram --token <t> --chat-id <c> [--dry-run]
+  oci-cost-cli config show
+  oci-cost-cli config clear [--dry-run]
+
+Credentials are stored in the OS keyring when available, otherwise in
+~/.config/oci-cost-cli/config.json (0600). 'show' only ever prints masked
+values.`,
+  update: `oci-cost-cli update — check npm for a newer version
+
+Usage:
+  oci-cost-cli update [--apply] [--dry-run]
+
+Bare 'update' only checks the npm registry and prints; it never modifies
+global npm packages. --apply installs the new version (npm install -g).
+--apply --dry-run previews the exact command without running it.`,
+}
+
+/**
+ * -h/--help must win over every subcommand's own flag parsing, because each
+ * subcommand parser silently ignores flags it doesn't recognize — so
+ * without this short-circuit, `--help` gets dropped and the subcommand runs
+ * for real. Two subcommands make that a destructive live side effect
+ * (`report --help` sends a real Telegram message; `config clear --help`
+ * deletes the stored credential), so this check must run before ANY
+ * subcommand dispatch, network call, or file write.
+ *
+ * Scans the whole argv, not just position 0, so `report --profile X --help`
+ * is caught too. Returns the subcommand name to show targeted help for, or
+ * 'general' for the top-level help, or null if no help flag is present.
+ */
+export function resolveHelpTarget(argv: string[]): string | null {
+  if (!argv.includes('-h') && !argv.includes('--help')) return null
+  const sub = argv[0]
+  return sub !== undefined && sub in SUBCOMMAND_HELP ? sub : 'general'
+}
+
+function printHelpFor(target: string): void {
+  if (target === 'general') printHelp()
+  else console.log(SUBCOMMAND_HELP[target])
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   if (argv.includes('--no-color')) process.env.NO_COLOR = '1'
-  if (argv[0] === '-h' || argv[0] === '--help') {
-    printHelp()
+
+  const helpTarget = resolveHelpTarget(argv)
+  if (helpTarget) {
+    printHelpFor(helpTarget)
     return 0
   }
   if (argv[0] === '-v' || argv[0] === '--version') {
