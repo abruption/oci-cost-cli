@@ -193,9 +193,13 @@ npx oci-cost-cli report --preset free-tier
 # Schedule it — installs a crontab line that invokes this exact command,
 # idempotent (running it again won't create a duplicate line)
 npx oci-cost-cli install-cron --cron "0 0 15 * *" -- report --preset free-tier
+
+# See what's currently scheduled, or remove it
+npx oci-cost-cli list-cron
+npx oci-cost-cli uninstall-cron --cron "0 0 15 * *" -- report --preset free-tier
 ```
 
-`--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything.
+`--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything. **Avoid passing `--telegram-token`/`--telegram-chat-id` to `install-cron`** — anything after `--` is written verbatim into the crontab line, so the token would end up in plaintext there (readable via `crontab -l`), defeating the keyring/`0600`-file storage model described below. `install-cron` warns loudly if it detects `--telegram-token` in the scheduled command; use `config set-telegram` instead and let `report` read the stored credential.
 
 ## Checking for updates
 
@@ -216,7 +220,7 @@ Bare `update` never touches your global npm packages — same `--dry-run`-by-def
 ## Aggregation caveats
 
 - **Cost API failure is never silently reported as $0.** Unlike the Usage API (which throws on a non-200 response), OCI's Cost API can degrade to an empty result set on failure. When that happens, `oci-cost-cli` shows an explicit `⚠️ Cost API failed` warning instead of a bare `0.00`.
-- **Currency handling**: when a SKU is reported in multiple currencies, USD is preferred; non-USD entries for that SKU are only summed together when no USD entry exists. Currencies are never summed together across different currencies.
+- **Currency handling**: when a SKU is reported in multiple currencies, USD is preferred and the other currencies are dropped for that SKU. When no USD entry exists, amounts in the same currency are summed together; if a SKU has two or more *distinct* non-USD currencies (no USD present), each currency is shown as its own line item instead of being summed or dropped — currencies are never summed together across different currencies, and no cost data is silently discarded.
 - **Free Tier detection is cost-based, not name-based.** Some Always Free coverage (e.g. outbound transfer within the free allowance) never gets a distinguishing `"- Free"` SKU suffix — only `cost > 0` is treated as "outside Free Tier."
 - **Outbound-transfer detection** is a case-insensitive substring match on `skuName` (`"outbound data transfer"`) — a heuristic that matches OCI's current SKU naming, not a guaranteed-stable API contract.
 

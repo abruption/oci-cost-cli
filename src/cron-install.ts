@@ -93,3 +93,58 @@ export function installCronJob(
   io.write(lines.join('\n') + '\n')
   return { installed: true, alreadyPresent: false, line, dryRun: false }
 }
+
+export interface UninstallCronResult {
+  removed: boolean
+  /** True when the exact `<cronExpr> <command>` line was not found in the crontab. */
+  found: boolean
+  line: string
+  /** True when `dryRun` was requested — `write()` was never called. */
+  dryRun: boolean
+}
+
+/**
+ * Removes the exact `<cronExpr> <command>` line previously written by
+ * `installCronJob` — same composition (cron expression + shell-quoted
+ * command), so `uninstall-cron` must be called with the same `--cron` and
+ * trailing `-- <subcommand> [flags]` that were used to install it. Leaves
+ * every other crontab line untouched.
+ */
+export function uninstallCronJob(
+  cronExpr: string,
+  command: string,
+  io: CrontabIO = realCrontabIO,
+  dryRun = false,
+): UninstallCronResult {
+  if (!isValidCronExpression(cronExpr)) {
+    throw new Error(`invalid cron expression: '${cronExpr}' (expected 5 space-separated fields)`)
+  }
+
+  const line = `${cronExpr} ${command}`
+  const existing = io.read()
+  const lines = existing.split('\n').filter((l) => l.trim().length > 0)
+
+  if (!lines.includes(line)) {
+    return { removed: false, found: false, line, dryRun }
+  }
+
+  if (dryRun) {
+    return { removed: false, found: true, line, dryRun: true }
+  }
+
+  const remaining = lines.filter((l) => l !== line)
+  io.write(remaining.length > 0 ? remaining.join('\n') + '\n' : '')
+  return { removed: true, found: true, line, dryRun: false }
+}
+
+/**
+ * Every crontab line this tool could have installed contains its own
+ * script path (see `buildScheduledCommand`), which always includes the
+ * package name — so a substring match on `marker` is enough to separate
+ * this tool's cron lines from a user's unrelated ones, without needing to
+ * track installed jobs in a separate state file.
+ */
+export function listCronJobs(io: CrontabIO = realCrontabIO, marker = 'oci-cost-cli'): string[] {
+  const existing = io.read()
+  return existing.split('\n').filter((l) => l.trim().length > 0 && l.includes(marker))
+}
