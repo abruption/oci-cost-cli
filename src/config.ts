@@ -41,8 +41,13 @@ export function parseOciConfig(content: string): ConfigParseResult {
 
     const kvMatch = line.match(/^(\w+)\s*=\s*(.+)$/)
     if (!kvMatch) continue
-    const [, key, value] = kvMatch
-    raw.get(currentSection)![key] = value.trim()
+    const [, key, rawValue] = kvMatch
+    // Strip inline comments: a '#' or ';' preceded by whitespace starts a
+    // trailing comment, the same convention most INI-style parsers use. A
+    // '#'/';' with no preceding whitespace (e.g. embedded in a path or
+    // URL) is left alone so values are not silently truncated.
+    const value = rawValue.replace(/\s[#;].*$/, '').trim()
+    raw.get(currentSection)![key] = value
   }
 
   for (const [section, kv] of raw) {

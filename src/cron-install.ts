@@ -3,6 +3,28 @@ import { execFileSync, spawnSync } from 'node:child_process'
 const CRON_FIELD = /^[\d*,\-/]+$/
 
 /**
+ * Validates a single cron field beyond the character-set check: rejects
+ * empty list elements (e.g. `1,,2`, a leading/trailing comma, or a bare
+ * `/` with no step) and reversed ranges (e.g. `5-3`, where start > end).
+ * Still not a full RFC-compliant parser — e.g. it doesn't bounds-check
+ * values against each field's valid range (0-59 for minutes, etc.).
+ */
+function isValidCronField(field: string): boolean {
+  if (!CRON_FIELD.test(field)) return false
+  for (const part of field.split(',')) {
+    if (part.length === 0) return false // e.g. '1,,2' or a leading/trailing comma
+
+    const [range, step, ...extra] = part.split('/')
+    if (extra.length > 0 || step === '') return false // e.g. 'a/b/c' or a bare trailing '/'
+
+    if (range === '*') continue
+    const rangeMatch = range.match(/^(\d+)-(\d+)$/)
+    if (rangeMatch && Number(rangeMatch[1]) > Number(rangeMatch[2])) return false // e.g. '5-3'
+  }
+  return true
+}
+
+/**
  * Lightweight sanity check for a standard 5-field cron expression
  * (minute hour day-of-month month day-of-week). Not a full RFC-compliant
  * parser — just enough to stop an obviously malformed expression from
@@ -11,7 +33,7 @@ const CRON_FIELD = /^[\d*,\-/]+$/
 export function isValidCronExpression(expr: string): boolean {
   const fields = expr.trim().split(/\s+/)
   if (fields.length !== 5) return false
-  return fields.every((f) => CRON_FIELD.test(f))
+  return fields.every(isValidCronField)
 }
 
 /**

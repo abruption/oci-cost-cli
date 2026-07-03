@@ -3,6 +3,10 @@ import { request as httpsRequest } from 'node:https'
 import { readPrivateKey } from './config.js'
 import type { Profile } from './types.js'
 
+/** Outbound HTTPS calls give up after this long rather than hanging forever
+ *  on a stalled connection (e.g. a cron job stuck indefinitely). */
+const REQUEST_TIMEOUT_MS = 15_000
+
 export interface SignedRequestParts {
   date: string
   authorization: string
@@ -83,12 +87,15 @@ export function ociRequest(
         },
       },
       (res) => {
-        let chunks = ''
-        res.on('data', (c) => (chunks += c))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: chunks }))
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
       },
     )
     req.on('error', reject)
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`request to ${host}${path} timed out after ${REQUEST_TIMEOUT_MS}ms`))
+    })
     if (bodyStr !== undefined) req.write(bodyStr)
     req.end()
   })

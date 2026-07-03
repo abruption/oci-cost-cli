@@ -7,6 +7,18 @@ on:
     branches: [master, develop]
 
 jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
   test:
     name: test (node ${{ matrix.node }} on ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
