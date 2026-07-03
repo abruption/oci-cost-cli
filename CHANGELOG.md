@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.3](https://github.com/abruption/oci-cost-cli/compare/v0.4.2...v0.4.3) (2026-07-03)
+
+
+### Bug Fixes
+
+* harden flag parsing, currency aggregation, and cron lifecycle ([#28](https://github.com/abruption/oci-cost-cli/issues/28)) ([ff6d028](https://github.com/abruption/oci-cost-cli/commit/ff6d02888462cd5dc7736c5dcbad782e3441b910))
+
+## [0.4.2](https://github.com/abruption/oci-cost-cli/compare/v0.4.1...v0.4.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* shell-quote crontab command args and validate --month range ([#25](https://github.com/abruption/oci-cost-cli/issues/25)) ([9b1a751](https://github.com/abruption/oci-cost-cli/commit/9b1a751576ccf03b317774597ab11cfe7217d9fe))
+
+## [0.4.1](https://github.com/abruption/oci-cost-cli/compare/v0.4.0...v0.4.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* honor -h/--help anywhere in argv before any subcommand runs ([#19](https://github.com/abruption/oci-cost-cli/issues/19)) ([f11f59a](https://github.com/abruption/oci-cost-cli/commit/f11f59aca0237baac7e4a4c18d2f3a15d21fc40e))
+
 ## [0.4.0](https://github.com/abruption/oci-cost-cli/compare/v0.3.0...v0.4.0) (2026-07-01)
 
 
