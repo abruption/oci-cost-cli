@@ -55,3 +55,15 @@ export function sampleCostItemsWithOverage() {
     { service: 'Compute', skuName: 'Standard - A1', skuPartNumber: 'B91714', unit: null, computedQuantity: null, currency: 'USD', computedAmount: 4.2 },
   ]
 }
+
+// Regression fixture for the currency-drop bug (issue #22, finding 3): a SKU
+// billed in two *distinct non-USD* currencies with no USD entry ever
+// reported. The old aggregation kept only the first-seen currency (SGD) and
+// silently discarded the EUR entry — not summed (correctly, currencies
+// can't be summed together), but also not shown anywhere.
+export function sampleCostItemsMixedNonUsdCurrencies() {
+  return [
+    { service: 'Virtual Cloud Network', skuName: 'Outbound Data Transfer Zone 2', skuPartNumber: 'B88514', unit: null, computedQuantity: null, currency: 'SGD', computedAmount: 1.5 },
+    { service: 'Virtual Cloud Network', skuName: 'Outbound Data Transfer Zone 2', skuPartNumber: 'B88514', unit: null, computedQuantity: null, currency: 'EUR', computedAmount: 2.25 },
+  ]
+}

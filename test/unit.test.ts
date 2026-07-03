@@ -11,19 +11,37 @@ import { execFileSync } from 'node:child_process'
 
 import { parseOciConfig } from '../src/config.js'
 import { signRequest } from '../src/signer.js'
-import { aggregateUsageAndCost, isFreeTierSkuName, monthRange, lastMonthRange } from '../src/usage.js'
+import {
+  aggregateUsageAndCost,
+  isFreeTierSkuName,
+  monthRange,
+  lastMonthRange,
+  queryUsageAndCost,
+  queryMultiProfile,
+  type OciRequestFn,
+} from '../src/usage.js'
 import { applyFilters, freeTierOffenders, filterByServices } from '../src/presets.js'
-import { isValidCronExpression, installCronJob, shellQuoteArg } from '../src/cron-install.js'
+import { isValidCronExpression, installCronJob, uninstallCronJob, listCronJobs, shellQuoteArg } from '../src/cron-install.js'
 import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
 import { fetchLatestVersion, compareVersions } from '../src/update.js'
-import { errMessage, resolveHelpTarget, buildScheduledCommand } from '../src/main.js'
-import type { Profile } from '../src/types.js'
+import {
+  errMessage,
+  resolveHelpTarget,
+  resolveVersionRequested,
+  buildScheduledCommand,
+  parseQueryFlags,
+  parseCronArgs,
+  parseSetTelegramArgs,
+  trailingHasPlaintextTelegramTokenRisk,
+} from '../src/main.js'
+import type { Profile, UsageQueryRange } from '../src/types.js'
 import {
   generateTestKeyPair,
   SAMPLE_OCI_CONFIG,
   sampleUsageItems,
   sampleCostItemsAllFree,
   sampleCostItemsWithOverage,
+  sampleCostItemsMixedNonUsdCurrencies,
 } from './fixtures.js'
 
 const { privateKeyPem: TEST_PRIVATE_KEY_PEM } = generateTestKeyPair()
@@ -178,6 +196,35 @@ test('aggregateUsageAndCost sums outbound transfer GB via case-insensitive SKU m
   assert.ok(Math.abs(outboundGB - 11.559428631747) < 1e-9)
 })
 
+test('aggregateUsageAndCost keeps every distinct non-USD currency as its own line item instead of dropping data (regression for issue #22 finding 3)', () => {
+  // Old behavior: a SKU billed in SGD then EUR (no USD ever present) kept
+  // only the first-seen currency (SGD) and silently discarded the EUR
+  // entry — not summed, not flagged, just gone.
+  const { lineItems } = aggregateUsageAndCost(sampleUsageItems(), sampleCostItemsMixedNonUsdCurrencies())
+  const outbound = lineItems.filter((i) => i.skuName === 'Outbound Data Transfer Zone 2')
+  assert.equal(outbound.length, 2)
+  const sgd = outbound.find((i) => i.currency === 'SGD')
+  const eur = outbound.find((i) => i.currency === 'EUR')
+  assert.ok(sgd, 'SGD entry must survive')
+  assert.ok(eur, 'EUR entry must not be silently dropped')
+  assert.equal(sgd!.cost, 1.5)
+  assert.equal(eur!.cost, 2.25)
+  // Currencies are still never summed together across different currencies.
+  assert.notEqual(sgd!.cost, sgd!.cost + eur!.cost)
+})
+
+test('aggregateUsageAndCost still sums same-currency entries when no USD is present, even with 3+ cost items for one SKU', () => {
+  const costItems = [
+    ...sampleCostItemsMixedNonUsdCurrencies(),
+    { service: 'Virtual Cloud Network', skuName: 'Outbound Data Transfer Zone 2', skuPartNumber: 'B88514', unit: null, computedQuantity: null, currency: 'SGD', computedAmount: 0.5 },
+  ]
+  const { lineItems } = aggregateUsageAndCost(sampleUsageItems(), costItems)
+  const outbound = lineItems.filter((i) => i.skuName === 'Outbound Data Transfer Zone 2')
+  assert.equal(outbound.length, 2) // still one row per distinct currency
+  const sgd = outbound.find((i) => i.currency === 'SGD')
+  assert.equal(sgd!.cost, 2) // 1.5 + 0.5, same-currency entries summed
+})
+
 // --- presets.ts --------------------------------------------------------
 
 test('freeTierOffenders returns nothing when every item is a $0 "- Free" SKU', () => {
@@ -301,6 +348,68 @@ test('buildScheduledCommand neutralizes a shell-metacharacter-bearing trailing a
   // embedded subshell.
   const out = execFileSync('sh', ['-c', `echo ${cmd}`], { encoding: 'utf8' })
   assert.match(out, /\$\(touch \/tmp\/oci-cost-cli-test-pwned\)/)
+})
+
+test('uninstallCronJob removes the exact previously-installed line and leaves others untouched', () => {
+  let stored = 'unrelated line here\n'
+  const io = {
+    read: () => stored,
+    write: (content: string) => {
+      stored = content
+    },
+  }
+  installCronJob('0 0 15 * *', 'oci-cost-cli report', io)
+  assert.match(stored, /oci-cost-cli report/)
+
+  const result = uninstallCronJob('0 0 15 * *', 'oci-cost-cli report', io)
+  assert.equal(result.removed, true)
+  assert.equal(result.found, true)
+  assert.ok(!stored.includes('oci-cost-cli report'))
+  assert.ok(stored.includes('unrelated line here')) // untouched
+})
+
+test('uninstallCronJob reports not-found without touching the crontab when the line is absent', () => {
+  let wrote = false
+  const io = {
+    read: () => 'some other line\n',
+    write: () => {
+      wrote = true
+    },
+  }
+  const result = uninstallCronJob('0 0 15 * *', 'oci-cost-cli report', io)
+  assert.equal(result.removed, false)
+  assert.equal(result.found, false)
+  assert.equal(wrote, false)
+})
+
+test('uninstallCronJob honors dryRun — reports found but never calls write()', () => {
+  let wrote = false
+  const io = {
+    read: () => '0 0 15 * * oci-cost-cli report\n',
+    write: () => {
+      wrote = true
+    },
+  }
+  const result = uninstallCronJob('0 0 15 * *', 'oci-cost-cli report', io, true)
+  assert.equal(result.found, true)
+  assert.equal(result.removed, false)
+  assert.equal(result.dryRun, true)
+  assert.equal(wrote, false)
+})
+
+test('listCronJobs returns only lines matching the oci-cost-cli marker', () => {
+  const io = {
+    read: () => '0 0 15 * * oci-cost-cli report\n0 3 * * * some-other-tool --flag\n',
+    write: () => {},
+  }
+  const lines = listCronJobs(io)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /oci-cost-cli report/)
+})
+
+test('listCronJobs returns an empty array when nothing is installed', () => {
+  const io = { read: () => '', write: () => {} }
+  assert.deepEqual(listCronJobs(io), [])
 })
 
 // --- credentials.ts (file-fallback tier only — keyring is injected as unavailable) ---
@@ -450,4 +559,233 @@ test('resolveHelpTarget catches the two destructive-side-effect cases from issue
 test('resolveHelpTarget falls back to "general" for an unrecognized leading token', () => {
   assert.equal(resolveHelpTarget(['--profile', 'DEFAULT', '--help']), 'general')
   assert.equal(resolveHelpTarget(['bogus-subcommand', '--help']), 'general')
+})
+
+// --- main.ts: resolveVersionRequested -------------------------------------
+// Regression coverage for issue #22 finding 4: -v/--version was only ever
+// checked at argv[0], unlike -h/--help's whole-argv scan (issue #17's fix).
+
+test('resolveVersionRequested returns false when no version flag is present', () => {
+  assert.equal(resolveVersionRequested([]), false)
+  assert.equal(resolveVersionRequested(['--profile', 'DEFAULT']), false)
+})
+
+test('resolveVersionRequested is true for a bare -v/--version at argv[0]', () => {
+  assert.equal(resolveVersionRequested(['-v']), true)
+  assert.equal(resolveVersionRequested(['--version']), true)
+})
+
+test('resolveVersionRequested scans the whole argv, not just position 0 (regression for issue #22 finding 4)', () => {
+  assert.equal(resolveVersionRequested(['--profile', 'DEFAULT', '--version']), true)
+  assert.equal(resolveVersionRequested(['--profile', 'DEFAULT', '-v']), true)
+  assert.equal(resolveVersionRequested(['report', '--dry-run', '--version']), true)
+})
+
+// --- main.ts: parseQueryFlags ----------------------------------------------
+// Regression coverage for issue #22 finding 1 (unrecognized/swallowed flags)
+// and finding 2 (--preset validated eagerly, before any I/O).
+
+test('parseQueryFlags parses recognized flags into QueryOptions', () => {
+  const o = parseQueryFlags(['--profile', 'DEFAULT', '--profile', 'US', '--month', '2026-06', '--raw', '--json'])
+  assert.deepEqual(o.profiles, ['DEFAULT', 'US'])
+  assert.equal(o.month, '2026-06')
+  assert.equal(o.raw, true)
+  assert.equal(o.outputFormat, 'json')
+})
+
+test('parseQueryFlags rejects a value-consuming flag that would swallow a sibling recognized flag as its value', () => {
+  // The exact bug from issue #22: `--service --output json` used to make
+  // `--service` blindly consume `--output` as its value (o.services =
+  // ['--output']), leaving `json` stray and --output silently defaulting.
+  assert.throws(() => parseQueryFlags(['--service', '--output', 'json']), /--service requires a value/)
+  assert.throws(() => parseQueryFlags(['--profile', '--month', '2026-06']), /--profile requires a value/)
+})
+
+test('parseQueryFlags rejects a value-consuming flag with a missing value at the end of argv', () => {
+  assert.throws(() => parseQueryFlags(['--profile']), /--profile requires a value/)
+})
+
+test('parseQueryFlags rejects a genuinely unrecognized --xxx flag instead of silently ignoring it', () => {
+  // `--profil` (typo for --profile) used to run an unfiltered query instead
+  // of erroring.
+  assert.throws(() => parseQueryFlags(['--profil', 'DEFAULT']), /unrecognized flag '--profil'/)
+})
+
+test('parseQueryFlags validates --preset eagerly (before any I/O), consistent with --output', () => {
+  assert.throws(() => parseQueryFlags(['--preset', 'comptue']), /unknown preset 'comptue'/)
+  const o = parseQueryFlags(['--preset', 'compute'])
+  assert.equal(o.preset, 'compute')
+})
+
+test('parseQueryFlags still validates --output eagerly (unchanged baseline behavior)', () => {
+  assert.throws(() => parseQueryFlags(['--output', 'yaml']), /invalid --output/)
+})
+
+// --- main.ts: parseCronArgs (install-cron / uninstall-cron shared parsing) ---
+
+test('parseCronArgs parses --cron plus the trailing scheduled command', () => {
+  const parsed = parseCronArgs(['--cron', '0 0 15 * *', '--', 'report', '--preset', 'free-tier'], 'install-cron')
+  assert.ok(parsed)
+  assert.equal(parsed!.cronExpr, '0 0 15 * *')
+  assert.match(parsed!.command, /report/)
+  assert.match(parsed!.command, /free-tier/)
+})
+
+test('parseCronArgs rejects a genuinely unrecognized flag before the -- separator', () => {
+  assert.throws(() => parseCronArgs(['--cronn', '0 0 15 * *', '--', 'report'], 'install-cron'), /unrecognized flag '--cronn'/)
+})
+
+test('parseCronArgs rejects --cron with a missing value instead of swallowing the next flag', () => {
+  assert.throws(() => parseCronArgs(['--cron', '--dry-run', '--', 'report'], 'install-cron'), /--cron requires a value/)
+})
+
+// --- main.ts: parseSetTelegramArgs (config set-telegram) -------------------
+
+test('parseSetTelegramArgs parses --token/--chat-id/--dry-run', () => {
+  const args = parseSetTelegramArgs(['set-telegram', '--token', 'abc', '--chat-id', '123', '--dry-run'])
+  assert.equal(args.token, 'abc')
+  assert.equal(args.chatId, '123')
+  assert.equal(args.dryRun, true)
+})
+
+test('parseSetTelegramArgs rejects --token swallowing a sibling recognized flag as its value', () => {
+  assert.throws(
+    () => parseSetTelegramArgs(['set-telegram', '--token', '--chat-id', '123']),
+    /--token requires a value/,
+  )
+})
+
+test('parseSetTelegramArgs rejects a genuinely unrecognized flag', () => {
+  assert.throws(() => parseSetTelegramArgs(['set-telegram', '--tokenn', 'abc']), /unrecognized flag '--tokenn'/)
+})
+
+// --- main.ts: trailingHasPlaintextTelegramTokenRisk (install-cron warning) ---
+
+test('trailingHasPlaintextTelegramTokenRisk detects --telegram-token in the scheduled command', () => {
+  assert.equal(trailingHasPlaintextTelegramTokenRisk(['report', '--telegram-token', 'live-token']), true)
+  assert.equal(trailingHasPlaintextTelegramTokenRisk(['report', '--preset', 'free-tier']), false)
+})
+
+// --- usage.ts: queryUsageAndCost / queryMultiProfile (injectable ociRequest seam) ---
+// Regression coverage for issue #22 finding 6 — previously untestable
+// because fetchUsageItems called ociRequest directly with no DI seam.
+
+const TEST_RANGE: UsageQueryRange = {
+  start: new Date('2026-01-01T00:00:00.000Z'),
+  end: new Date('2026-02-01T00:00:00.000Z'),
+}
+
+function usageApiItemsBody(items: unknown[]): string {
+  return JSON.stringify({ items })
+}
+
+type FakeResponse = { status: number; body: string } | (() => Promise<{ status: number; body: string }>)
+
+function fakeOciRequest(responses: {
+  USAGE?: FakeResponse
+  COST?: FakeResponse
+  perProfile?: (profileName: string, queryType: 'USAGE' | 'COST') => FakeResponse | undefined
+}): OciRequestFn {
+  return async (profile, _method, _host, _path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    const r = responses.perProfile?.(profile.name, queryType) ?? responses[queryType]
+    if (!r) throw new Error(`test fixture has no response configured for queryType ${queryType}`)
+    return typeof r === 'function' ? r() : r
+  }
+}
+
+test('queryUsageAndCost aggregates a successful USAGE + COST response via the injected request function', async () => {
+  const requestFn = fakeOciRequest({
+    USAGE: { status: 200, body: usageApiItemsBody(sampleUsageItems()) },
+    COST: { status: 200, body: usageApiItemsBody(sampleCostItemsWithOverage()) },
+  })
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, false)
+  assert.equal(result.profileName, 'DEFAULT')
+  const overage = result.lineItems.find((i) => i.skuName === 'Standard - A1')
+  assert.ok(overage)
+  assert.equal(overage!.cost, 4.2)
+  assert.ok(result.raw)
+  assert.equal(result.raw!.usage.length, sampleUsageItems().length)
+})
+
+test('queryUsageAndCost sets costApiFailed=true and populates `error` when the USAGE API throws (network error)', async () => {
+  const requestFn = fakeOciRequest({ USAGE: () => Promise.reject(new Error('connect ETIMEDOUT')) })
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, true)
+  assert.deepEqual(result.lineItems, [])
+  assert.match(result.error ?? '', /ETIMEDOUT/)
+})
+
+test('queryUsageAndCost treats a non-200 USAGE response as a failure (not a thrown error) and never queries COST', async () => {
+  let costWasQueried = false
+  const requestFn = fakeOciRequest({
+    USAGE: { status: 500, body: '' },
+    perProfile: (_name, queryType) => {
+      if (queryType === 'COST') costWasQueried = true
+      return undefined
+    },
+  })
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, true)
+  assert.match(result.error ?? '', /HTTP 500/)
+  assert.equal(costWasQueried, false)
+})
+
+test('queryUsageAndCost surfaces costApiFailed=true (partial failure) when COST fails but USAGE succeeded, without dropping usage line items', async () => {
+  const requestFn = fakeOciRequest({
+    USAGE: { status: 200, body: usageApiItemsBody(sampleUsageItems()) },
+    COST: { status: 500, body: '' },
+  })
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, true)
+  assert.equal(result.error, undefined) // distinct from the USAGE-throws case, which does set `error`
+  assert.equal(result.lineItems.length, sampleUsageItems().length)
+  assert.ok(result.lineItems.every((i) => i.cost === null))
+})
+
+test('queryMultiProfile queries every profile in parallel and returns one result per profile, in order', async () => {
+  const requestFn = fakeOciRequest({
+    USAGE: { status: 200, body: usageApiItemsBody(sampleUsageItems()) },
+    COST: { status: 200, body: usageApiItemsBody(sampleCostItemsAllFree()) },
+  })
+  const profiles: Profile[] = [
+    { ...TEST_PROFILE, name: 'A' },
+    { ...TEST_PROFILE, name: 'B' },
+  ]
+  const results = await queryMultiProfile(profiles, TEST_RANGE, requestFn)
+  assert.deepEqual(results.map((r) => r.profileName), ['A', 'B'])
+  assert.ok(results.every((r) => !r.costApiFailed))
+})
+
+test('queryMultiProfile maps a rejected per-profile promise into a costApiFailed result via Promise.allSettled, without failing the whole batch', async () => {
+  // queryUsageAndCost catches every I/O error internally, so the only way
+  // its own returned promise actually rejects (exercising queryMultiProfile's
+  // Promise.allSettled fallback branch, as opposed to queryUsageAndCost's
+  // own try/catch) is if the synchronous, unguarded aggregateUsageAndCost()
+  // call throws. A non-string skuName in an otherwise-well-formed API
+  // response — an unsafe type assertion elsewhere lets this through at
+  // runtime — reaches skuName.toLowerCase() and throws a real TypeError.
+  const malformedUsageBody = JSON.stringify({
+    items: [{ service: 'Compute', skuName: 12345, unit: 'X', computedQuantity: 1, computedAmount: 0, currency: null }],
+  })
+  const requestFn = fakeOciRequest({
+    perProfile: (name, queryType) => {
+      if (name === 'BAD' && queryType === 'USAGE') return { status: 200, body: malformedUsageBody }
+      return queryType === 'USAGE'
+        ? { status: 200, body: usageApiItemsBody(sampleUsageItems()) }
+        : { status: 200, body: usageApiItemsBody(sampleCostItemsAllFree()) }
+    },
+  })
+  const profiles: Profile[] = [
+    { ...TEST_PROFILE, name: 'GOOD' },
+    { ...TEST_PROFILE, name: 'BAD' },
+  ]
+  const results = await queryMultiProfile(profiles, TEST_RANGE, requestFn)
+  assert.equal(results.length, 2)
+  const good = results.find((r) => r.profileName === 'GOOD')
+  const bad = results.find((r) => r.profileName === 'BAD')
+  assert.ok(good && good.costApiFailed === false && good.lineItems.length > 0)
+  assert.ok(bad && bad.costApiFailed === true)
+  assert.ok(bad!.error) // s.reason.message, mapped by queryMultiProfile's Promise.allSettled branch
 })

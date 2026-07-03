@@ -9,6 +9,21 @@ import type {
 
 const USAGE_PATH = '/20200107/usage'
 
+/**
+ * Injectable seam for the signed HTTP call, mirroring the DI pattern already
+ * used by `update.ts` (`RegistryFetcher`) and `credentials.ts` (the
+ * `keyring` param) — lets `queryUsageAndCost`/`queryMultiProfile` be unit
+ * tested (success, partial-failure, multi-profile aggregation) without a
+ * live OCI call. Defaults to the real `ociRequest`.
+ */
+export type OciRequestFn = (
+  profile: Profile,
+  method: 'GET' | 'POST',
+  host: string,
+  path: string,
+  body?: unknown,
+) => Promise<{ status: number; body: string }>
+
 export function usageApiHost(profile: Profile): string {
   return `usageapi.${profile.region}.oci.oraclecloud.com`
 }
@@ -61,6 +76,7 @@ async function fetchUsageItems(
   profile: Profile,
   range: UsageQueryRange,
   queryType: 'USAGE' | 'COST',
+  requestFn: OciRequestFn = ociRequest,
 ): Promise<{ items: UsageLineItem[]; failed: boolean; status: number }> {
   const host = usageApiHost(profile)
   const body = {
@@ -73,7 +89,7 @@ async function fetchUsageItems(
     queryType,
   }
 
-  const res = await ociRequest(profile, 'POST', host, USAGE_PATH, body)
+  const res = await requestFn(profile, 'POST', host, USAGE_PATH, body)
   if (res.status !== 200) {
     return { items: [], failed: true, status: res.status }
   }
@@ -98,6 +114,33 @@ export interface AggregationResult {
   outboundGB: number
 }
 
+interface CostBucket {
+  service: string
+  skuName: string
+  currency: string
+  cost: number
+}
+
+/**
+ * Decides which already-summed-per-currency bucket(s) become line item(s)
+ * for a SKU. Mirrors report.js's proven logic for the common cases:
+ *  - A single currency: use it as-is.
+ *  - USD present alongside other currencies: USD wins, the others are
+ *    intentionally dropped (documented in the README).
+ * The bug this exists to fix: when there is NO USD entry and 2+ *distinct*
+ * non-USD currencies are present (e.g. SGD then EUR, no USD ever reported),
+ * the old code silently kept only the first-seen currency and discarded the
+ * rest — no summing (correctly, currencies can't be summed), but also no
+ * visibility. Returning every bucket in that case means the caller renders
+ * one line item per currency instead of losing data.
+ */
+function resolveCostBuckets(perCurrency: Map<string, CostBucket>): CostBucket[] {
+  const buckets = [...perCurrency.values()]
+  if (buckets.length <= 1) return buckets
+  const usd = buckets.find((b) => b.currency === 'USD')
+  return usd ? [usd] : buckets
+}
+
 /**
  * Pure aggregation of already-fetched USAGE + COST line items — no I/O, so
  * it's directly unit-testable against fixture JSON without a live OCI call.
@@ -105,7 +148,10 @@ export interface AggregationResult {
  * Preserves gotchas discovered in ~/Projects/oci-traffic-report/report.js:
  *  - The same SKU can appear in multiple currencies (e.g. a $0 free-tier
  *    line reported in both SGD and USD). USD is preferred; non-USD entries
- *    are only summed together when no USD entry exists for that SKU.
+ *    are only summed together (within the same currency) when no USD entry
+ *    exists for that SKU. If 2+ *distinct* non-USD currencies are present
+ *    with no USD entry, each becomes its own line item — see
+ *    `resolveCostBuckets` — rather than silently dropping all but one.
  *  - "outbound data transfer" detection is a case-insensitive substring
  *    match on `skuName` (heuristic, matches OCI's actual SKU naming).
  */
@@ -129,8 +175,10 @@ export function aggregateUsageAndCost(
     if (skuName.toLowerCase().includes('outbound data transfer')) outboundGB += qty
   }
 
-  // cost aggregation (by service+skuName), USD-preferred per report.js's proven logic
-  const costByKey = new Map<string, { service: string; skuName: string; cost: number; currency: string }>()
+  // cost aggregation (by service+skuName), bucketed per-currency so a
+  // second/third distinct currency is summed within itself instead of
+  // being discarded — see resolveCostBuckets for how buckets become rows.
+  const costByKey = new Map<string, Map<string, CostBucket>>()
   for (const item of costItems) {
     const service = item.service ?? 'Unknown'
     const skuName = item.skuName ?? service
@@ -138,12 +186,14 @@ export function aggregateUsageAndCost(
     const cost = item.computedAmount ?? 0
     const currency = (item.currency ?? '').trim()
     if (!currency) continue
-    const existing = costByKey.get(key)
-    if (!existing || (existing.currency !== 'USD' && currency === 'USD')) {
-      costByKey.set(key, { service, skuName, cost, currency })
-    } else if (existing.currency === currency) {
-      existing.cost += cost
+    let perCurrency = costByKey.get(key)
+    if (!perCurrency) {
+      perCurrency = new Map()
+      costByKey.set(key, perCurrency)
     }
+    const existing = perCurrency.get(currency)
+    if (existing) existing.cost += cost
+    else perCurrency.set(currency, { service, skuName, currency, cost })
   }
 
   const lineItems: AggregatedLineItem[] = []
@@ -151,29 +201,47 @@ export function aggregateUsageAndCost(
   for (const u of usageByKey.values()) {
     const costKey = `${u.service}|${u.skuName}`
     coveredByUsage.add(costKey)
-    const c = costByKey.get(costKey)
-    lineItems.push({
-      service: u.service,
-      skuName: u.skuName,
-      unit: u.unit,
-      quantity: u.qty,
-      cost: c ? c.cost : null,
-      currency: c ? c.currency : null,
-      isFreeTierSku: isFreeTierSkuName(u.skuName),
+    const buckets = resolveCostBuckets(costByKey.get(costKey) ?? new Map())
+    if (buckets.length === 0) {
+      lineItems.push({
+        service: u.service,
+        skuName: u.skuName,
+        unit: u.unit,
+        quantity: u.qty,
+        cost: null,
+        currency: null,
+        isFreeTierSku: isFreeTierSkuName(u.skuName),
+      })
+      continue
+    }
+    buckets.forEach((b, i) => {
+      lineItems.push({
+        service: u.service,
+        skuName: u.skuName,
+        // Usage quantity/unit only apply once per SKU — extra currency
+        // buckets (the multi-non-USD-currency case) get 0/'' so we don't
+        // fabricate duplicate usage.
+        unit: i === 0 ? u.unit : '',
+        quantity: i === 0 ? u.qty : 0,
+        cost: b.cost,
+        currency: b.currency,
+        isFreeTierSku: isFreeTierSkuName(u.skuName),
+      })
     })
   }
   // cost-only line items (rare, but keep parity with report.js which treats
   // usage and cost as separately-sourced aggregates)
-  for (const [key, c] of costByKey) {
-    if (!coveredByUsage.has(key)) {
+  for (const [key, perCurrency] of costByKey) {
+    if (coveredByUsage.has(key)) continue
+    for (const b of resolveCostBuckets(perCurrency)) {
       lineItems.push({
-        service: c.service,
-        skuName: c.skuName,
+        service: b.service,
+        skuName: b.skuName,
         unit: '',
         quantity: 0,
-        cost: c.cost,
-        currency: c.currency,
-        isFreeTierSku: isFreeTierSkuName(c.skuName),
+        cost: b.cost,
+        currency: b.currency,
+        isFreeTierSku: isFreeTierSkuName(b.skuName),
       })
     }
   }
@@ -191,10 +259,11 @@ export function aggregateUsageAndCost(
 export async function queryUsageAndCost(
   profile: Profile,
   range: UsageQueryRange,
+  requestFn: OciRequestFn = ociRequest,
 ): Promise<ProfileUsageResult> {
   let usageRes: Awaited<ReturnType<typeof fetchUsageItems>>
   try {
-    usageRes = await fetchUsageItems(profile, range, 'USAGE')
+    usageRes = await fetchUsageItems(profile, range, 'USAGE', requestFn)
   } catch (e) {
     return {
       profileName: profile.name,
@@ -218,7 +287,7 @@ export async function queryUsageAndCost(
     }
   }
 
-  const costRes = await fetchUsageItems(profile, range, 'COST').catch(() => ({
+  const costRes = await fetchUsageItems(profile, range, 'COST', requestFn).catch(() => ({
     items: [] as UsageLineItem[],
     failed: true,
     status: 0,
@@ -240,8 +309,9 @@ export async function queryUsageAndCost(
 export async function queryMultiProfile(
   profiles: Profile[],
   range: UsageQueryRange,
+  requestFn: OciRequestFn = ociRequest,
 ): Promise<ProfileUsageResult[]> {
-  const settled = await Promise.allSettled(profiles.map((p) => queryUsageAndCost(p, range)))
+  const settled = await Promise.allSettled(profiles.map((p) => queryUsageAndCost(p, range, requestFn)))
   return settled.map((s, i) =>
     s.status === 'fulfilled'
       ? s.value
