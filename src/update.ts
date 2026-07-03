@@ -1,6 +1,10 @@
 import { execFileSync } from 'node:child_process'
 import { request } from 'node:https'
 
+/** Outbound HTTPS calls give up after this long rather than hanging forever
+ *  on a stalled connection (e.g. a cron job stuck indefinitely). */
+const REQUEST_TIMEOUT_MS = 15_000
+
 /** Injectable so tests never hit the real npm registry. */
 export type RegistryFetcher = (packageName: string) => Promise<string>
 
@@ -14,13 +18,14 @@ function fetchFromNpmRegistry(packageName: string): Promise<string> {
       `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
       { method: 'GET', headers: { accept: 'application/json' } },
       (res) => {
-        let body = ''
-        res.on('data', (chunk) => (body += chunk))
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
         res.on('end', () => {
           if (res.statusCode !== 200) {
             reject(new Error(`npm registry error: HTTP ${res.statusCode}`))
             return
           }
+          const body = Buffer.concat(chunks).toString('utf8')
           try {
             const parsed = JSON.parse(body) as { version?: string }
             if (!parsed.version) throw new Error('npm registry response has no version field')
@@ -32,6 +37,9 @@ function fetchFromNpmRegistry(packageName: string): Promise<string> {
       },
     )
     req.on('error', reject)
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`request to registry.npmjs.org timed out after ${REQUEST_TIMEOUT_MS}ms`))
+    })
     req.end()
   })
 }
@@ -39,8 +47,16 @@ function fetchFromNpmRegistry(packageName: string): Promise<string> {
 /**
  * Compares two `major.minor.patch`-style version strings.
  * Returns -1 if `a` < `b`, 0 if equal, 1 if `a` > `b`.
- * Non-numeric/missing segments (e.g. a pre-release suffix) are treated as 0
- * — good enough for "is a real update available", not a full semver parser.
+ *
+ * Each segment is parsed with `parseInt`, which reads only the segment's
+ * leading digits — so a pre-release suffix glued onto a numeric segment
+ * (e.g. `'0-rc1'`) contributes just that leading number (`0`), and a
+ * segment that is missing or starts with a non-digit becomes 0. This is
+ * good enough for "is a real update available", not a full semver parser:
+ * it does not distinguish a release from its own pre-release suffix (e.g.
+ * `compareVersions('0.4.0', '0.4.0-rc1')` is `0`), which is acceptable
+ * because `fetchLatestVersion` reads npm's `latest` dist-tag, which by
+ * convention never points at a pre-release.
  */
 export function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map((n) => parseInt(n, 10) || 0)
