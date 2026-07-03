@@ -1,5 +1,9 @@
 import { request as httpsRequest } from 'node:https'
 
+/** Outbound HTTPS calls give up after this long rather than hanging forever
+ *  on a stalled connection (e.g. a cron job stuck indefinitely). */
+const REQUEST_TIMEOUT_MS = 15_000
+
 /**
  * Sends a Telegram message via the Bot API. Generalized from
  * ~/Projects/oci-traffic-report/report.js's `sendTelegram` (which hardcoded
@@ -25,18 +29,16 @@ export function sendTelegram(
         },
       },
       (res) => {
-        let chunks = ''
-        res.on('data', (c) => (chunks += c))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: chunks }))
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
       },
     )
     req.on('error', reject)
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`request to api.telegram.org timed out after ${REQUEST_TIMEOUT_MS}ms`))
+    })
     req.write(body)
     req.end()
   })
-}
-
-export function progressBar(pct: number, len = 20): string {
-  const filled = Math.max(0, Math.min(len, Math.round((pct / 100) * len)))
-  return '█'.repeat(filled) + '░'.repeat(len - filled)
 }
