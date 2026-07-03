@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/abruption/oci-cost-cli/compare/v0.4.3...v0.4.4) (2026-07-03)
+
+
+### Bug Fixes
+
+* low-priority backlog — timeouts, config parser, dead code, lint, type mismatches ([#31](https://github.com/abruption/oci-cost-cli/issues/31)) ([ece15ed](https://github.com/abruption/oci-cost-cli/commit/ece15ed2b97a76e37f1682a8ca15d6dc61d9b4e0))
+
 ## [0.4.3](https://github.com/abruption/oci-cost-cli/compare/v0.4.2...v0.4.3) (2026-07-03)
 
 
