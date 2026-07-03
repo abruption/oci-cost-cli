@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/abruption/oci-cost-cli/compare/v0.4.2...v0.4.3) (2026-07-03)
+
+
+### Bug Fixes
+
+* harden flag parsing, currency aggregation, and cron lifecycle ([#28](https://github.com/abruption/oci-cost-cli/issues/28)) ([ff6d028](https://github.com/abruption/oci-cost-cli/commit/ff6d02888462cd5dc7736c5dcbad782e3441b910))
+
 ## [0.4.2](https://github.com/abruption/oci-cost-cli/compare/v0.4.1...v0.4.2) (2026-07-02)
 
 
