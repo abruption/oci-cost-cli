@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createVerify, createPublicKey } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -20,9 +20,16 @@ import {
   queryMultiProfile,
   type OciRequestFn,
 } from '../src/usage.js'
-import { applyFilters, freeTierOffenders, filterByServices } from '../src/presets.js'
+import { applyFilters, freeTierOffenders } from '../src/presets.js'
 import { isValidCronExpression, installCronJob, uninstallCronJob, listCronJobs, shellQuoteArg } from '../src/cron-install.js'
-import { saveTelegramCredential, loadTelegramCredential, maskToken, configFilePath } from '../src/credentials.js'
+import {
+  saveTelegramCredential,
+  loadTelegramCredential,
+  deleteTelegramCredential,
+  maskToken,
+  configFilePath,
+  type KeyringImpl,
+} from '../src/credentials.js'
 import { fetchLatestVersion, compareVersions } from '../src/update.js'
 import {
   errMessage,
@@ -64,6 +71,35 @@ test('parseOciConfig reports malformed profiles without dropping the others', ()
   assert.match(errors[0].message, /fingerprint/)
   assert.match(errors[0].message, /tenancy/)
   assert.ok(!profiles.has('BROKEN'))
+})
+
+test('parseOciConfig strips inline comments but keeps values with an embedded #/;', () => {
+  const config = `
+[DEFAULT]
+user=ocid1.user.oc1..aaaacommented
+fingerprint=aa:bb:cc:dd
+tenancy=ocid1.tenancy.oc1..aaaacommented # trailing comment
+region=us-ashburn-1 ; also a comment
+key_file=/home/test/.oci/oci_api_key.pem
+`
+  const { profiles, errors } = parseOciConfig(config)
+  assert.equal(errors.length, 0)
+  const p = profiles.get('DEFAULT')
+  assert.equal(p?.tenancy, 'ocid1.tenancy.oc1..aaaacommented')
+  assert.equal(p?.region, 'us-ashburn-1')
+})
+
+test('parseOciConfig treats a #/; with no preceding whitespace as part of the value', () => {
+  const config = `
+[DEFAULT]
+user=ocid1.user.oc1..aaaahash
+fingerprint=aa:bb:cc:dd
+tenancy=ocid1.tenancy.oc1..aaaahash
+region=us-ashburn-1
+key_file=/home/test/.oci/oci_api_key.pem#not-a-comment
+`
+  const { profiles } = parseOciConfig(config)
+  assert.equal(profiles.get('DEFAULT')?.keyFile, '/home/test/.oci/oci_api_key.pem#not-a-comment')
 })
 
 // --- signer.ts -------------------------------------------------------------
@@ -270,6 +306,17 @@ test('isValidCronExpression rejects malformed expressions', () => {
   assert.ok(!isValidCronExpression('0 0 15 * * *')) // 6 fields
 })
 
+test('isValidCronExpression rejects semantically-invalid fields that are character-valid', () => {
+  assert.ok(!isValidCronExpression('0 5-3 * * *')) // reversed range (start > end)
+  assert.ok(!isValidCronExpression('0 0 15 * 1,,2')) // empty list element between commas
+  assert.ok(!isValidCronExpression('0 0 15 * ,1')) // leading comma
+  assert.ok(!isValidCronExpression('0 0 15 * 1,')) // trailing comma
+  assert.ok(!isValidCronExpression('*/ 0 15 * *')) // bare trailing '/' with no step
+  // A forward range (start <= end) and an equal range both remain valid.
+  assert.ok(isValidCronExpression('0 9-17 * * 1-5'))
+  assert.ok(isValidCronExpression('0 5-5 * * *'))
+})
+
 test('installCronJob appends a new line and is idempotent on re-run', () => {
   let stored = ''
   const io = {
@@ -457,6 +504,59 @@ test('loadTelegramCredential returns null when nothing is stored', async (t) => 
 
   const loaded = await loadTelegramCredential(noKeyring)
   assert.equal(loaded, null)
+})
+
+// --- credentials.ts (keyring success + failure-fallback paths) ---
+
+/** In-memory fake standing in for a real OS keyring/Secret Service. */
+function fakeKeyring(): KeyringImpl {
+  const store = new Map<string, string>()
+  const key = (service: string, account: string) => `${service}:${account}`
+  return {
+    setPassword: (service, account, value) => {
+      store.set(key(service, account), value)
+    },
+    getPassword: (service, account) => store.get(key(service, account)) ?? null,
+    deletePassword: (service, account) => store.delete(key(service, account)),
+  }
+}
+
+test('saveTelegramCredential/loadTelegramCredential/deleteTelegramCredential round-trip through a working keyring', async (t) => {
+  withTmpHome(t)
+  const impl = fakeKeyring()
+  const withKeyring = async () => impl
+
+  const result = await saveTelegramCredential({ botToken: 'keyring-token-123456', chatId: '111' }, withKeyring)
+  assert.equal(result.storedIn, 'keyring')
+  // A successful keyring save must not also write the file fallback.
+  assert.equal(existsSync(configFilePath()), false)
+
+  const loaded = await loadTelegramCredential(withKeyring)
+  assert.deepEqual(loaded, { botToken: 'keyring-token-123456', chatId: '111' })
+
+  await deleteTelegramCredential(withKeyring)
+  assert.equal(await loadTelegramCredential(withKeyring), null)
+})
+
+test('saveTelegramCredential falls back to file when the keyring is available but setPassword throws', async (t) => {
+  withTmpHome(t)
+  const throwingKeyring: KeyringImpl = {
+    setPassword: () => {
+      throw new Error('Secret Service unavailable')
+    },
+    getPassword: () => null,
+    deletePassword: () => false,
+  }
+  const withThrowingKeyring = async () => throwingKeyring
+
+  const result = await saveTelegramCredential({ botToken: 'fallback-token-123', chatId: '222' }, withThrowingKeyring)
+  assert.equal(result.storedIn, 'file')
+
+  // loadTelegramCredential: keyring present but has nothing for this account
+  // (mirrors the real Entry wrapper, which swallows getPassword errors into
+  // `null`) — falls through to the file that the save above just wrote.
+  const loaded = await loadTelegramCredential(withThrowingKeyring)
+  assert.deepEqual(loaded, { botToken: 'fallback-token-123', chatId: '222' })
 })
 
 test('maskToken never reveals the middle of a secret', () => {

@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
+    "lint": "eslint .",
     "pretest": "tsc",
     "test": "node --test dist/test/unit.test.js",
     "start": "tsc && node dist/src/main.js",
@@ -27,8 +28,14 @@
     "LICENSE"
   ],
   "exports": {
-    ".": "./dist/src/main.js",
-    "./signer": "./dist/src/signer.js"
+    ".": {
+      "types": "./dist/src/main.d.ts",
+      "default": "./dist/src/main.js"
+    },
+    "./signer": {
+      "types": "./dist/src/signer.d.ts",
+      "default": "./dist/src/signer.js"
+    }
   },
   "keywords": [
     "oci",
@@ -53,7 +60,10 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^26.0.0",
-    "typescript": "^6.0.3"
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^18.19.130",
+    "eslint": "^9.39.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.1"
   }
 }
