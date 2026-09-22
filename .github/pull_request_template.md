@@ -1,5 +1,5 @@
 <!-- PR title should follow Conventional Commits, e.g. "fix: reject invalid --currency values" -->
-<!-- Base this on `develop` unless you are syncing develop into master. -->
+<!-- Base every change on `master`; it is the repository's single integration branch. -->
 
 ## Summary
 <!-- What does this change and why? -->
