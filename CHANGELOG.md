@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0](https://github.com/abruption/oci-cost-cli/compare/v0.4.4...v0.5.0) (2026-09-22)
+
+
+### Features
+
+* add update subcommand for self-updating via npm (v0.4.0) ([#15](https://github.com/abruption/oci-cost-cli/issues/15)) ([067b1d6](https://github.com/abruption/oci-cost-cli/commit/067b1d6ab0ef5b8d715c3d0ad25033d7aa3ad7ac))
+* agent-friendly CLI options and Telegram formatting (v0.3.0) ([#11](https://github.com/abruption/oci-cost-cli/issues/11)) ([757012d](https://github.com/abruption/oci-cost-cli/commit/757012d9a45069c6b1c8b5db384ad26525e08cfe))
+* initial implementation of oci-cost-cli ([1a77b16](https://github.com/abruption/oci-cost-cli/commit/1a77b16b6ce49faf87cbb46bd7b9d3698512b7be))
+
+
+### Bug Fixes
+
+* generate test RSA key at runtime, fix Windows CI failures ([#1](https://github.com/abruption/oci-cost-cli/issues/1)) ([#2](https://github.com/abruption/oci-cost-cli/issues/2)) ([79a8c7e](https://github.com/abruption/oci-cost-cli/commit/79a8c7ec62397e91c69686b5a3b7bd71f90c896d))
+* harden flag parsing, currency aggregation, and cron lifecycle ([#28](https://github.com/abruption/oci-cost-cli/issues/28)) ([eb9408c](https://github.com/abruption/oci-cost-cli/commit/eb9408c5af7078d0bad61ea1eb6042805e04f221))
+* honor -h/--help anywhere in argv before any subcommand runs ([#19](https://github.com/abruption/oci-cost-cli/issues/19)) ([a96e651](https://github.com/abruption/oci-cost-cli/commit/a96e65162d654dfd88d99a685a63b0519fdbb455))
+* low-priority backlog — timeouts, config parser, dead code, lint, type mismatches ([#31](https://github.com/abruption/oci-cost-cli/issues/31)) ([26fd3e2](https://github.com/abruption/oci-cost-cli/commit/26fd3e222d3639b8dd1e943ec75e468dd5ed26c5))
+* shell-quote crontab command args and validate --month range ([#25](https://github.com/abruption/oci-cost-cli/issues/25)) ([c67b0b2](https://github.com/abruption/oci-cost-cli/commit/c67b0b295c718fda8aeea2b24e8174f60ed23395))
+
 ## [0.4.4](https://github.com/abruption/oci-cost-cli/compare/v0.4.3...v0.4.4) (2026-07-03)
 
 
