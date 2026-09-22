@@ -229,6 +229,12 @@ Bare `update` never touches your global npm packages — same `--dry-run`-by-def
 - Telegram bot token/chat ID: OS keyring first (macOS Keychain / Linux Secret Service via [`@napi-rs/keyring`](https://www.npmjs.com/package/@napi-rs/keyring)), falling back to `~/.config/oci-cost-cli/config.json` with `0600`/`0700` permissions — the same trust model as `~/.aws/credentials` or `~/.npmrc`, not application-level encryption (a cipher whose key must also live on disk for unattended cron access provides no real additional security over plain file permissions).
 - `~/.oci/config` private keys are read as-is; encrypted keys (`pass_phrase` set) are not yet supported.
 
+## Contributing
+
+Development uses a single integration branch: `master`. Start feature and fix
+branches from the latest `master` and open pull requests back to `master`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the required checks and release flow.
+
 ## License
 
 MIT
