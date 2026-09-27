@@ -4,7 +4,7 @@ name: Release
 #  1. Every merged pull request to master updates a
 #     "release PR" (version bump + CHANGELOG from Conventional Commits).
 #  2. Merging that PR creates the GitHub Release + tag, then this same run
-#     publishes to npm with provenance.
+#     publishes to npm through a Trusted Publisher (OIDC).
 # No manual `npm version` needed. Only pushes to master trigger a release.
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      id-token: write # npm provenance (OIDC)
+      id-token: write # npm Trusted Publisher (OIDC)
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
@@ -34,15 +34,13 @@ jobs:
       - uses: actions/setup-node@v7
         if: ${{ steps.release.outputs.release_created }}
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
+          package-manager-cache: false
 
       - if: ${{ steps.release.outputs.release_created }}
         run: npm ci
       - if: ${{ steps.release.outputs.release_created }}
         run: npm test
       - if: ${{ steps.release.outputs.release_created }}
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
