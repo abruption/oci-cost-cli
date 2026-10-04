@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/abruption/oci-cost-cli/compare/v0.5.0...v0.5.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* harden OCI reporting, credentials, and cron ([#58](https://github.com/abruption/oci-cost-cli/issues/58)) ([5b4e214](https://github.com/abruption/oci-cost-cli/commit/5b4e214d77c5609c66c0fa984e7110b4ded8c70e))
+
 ## [0.5.0](https://github.com/abruption/oci-cost-cli/compare/v0.4.4...v0.5.0) (2026-09-27)
 
 
