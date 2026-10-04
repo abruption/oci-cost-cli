@@ -113,7 +113,10 @@ key_file=/home/test/.oci/oci_api_key.pem#not-a-comment
 })
 
 test('resolveKeyFilePath expands only the current-user ~/ prefix', () => {
-  assert.equal(resolveKeyFilePath('~/.oci/oci_api_key.pem', '/isolated/home'), '/isolated/home/.oci/oci_api_key.pem')
+  assert.equal(
+    resolveKeyFilePath('~/.oci/oci_api_key.pem', '/isolated/home'),
+    join('/isolated/home', '.oci', 'oci_api_key.pem'),
+  )
   assert.equal(resolveKeyFilePath('/absolute/key.pem', '/isolated/home'), '/absolute/key.pem')
   assert.equal(resolveKeyFilePath('relative/key.pem', '/isolated/home'), 'relative/key.pem')
   assert.equal(resolveKeyFilePath('name~with-tilde.pem', '/isolated/home'), 'name~with-tilde.pem')
