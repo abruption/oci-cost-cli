@@ -135,6 +135,7 @@ export interface SaveResult {
 export async function saveTelegramCredential(
   cred: TelegramCredential,
   keyring: () => Promise<KeyringImpl | null> = loadRealKeyring,
+  fileWriter: (credential: TelegramCredential) => void = writeFileCredential,
 ): Promise<SaveResult> {
   const impl = await keyring()
   if (impl) {
@@ -151,10 +152,11 @@ export async function saveTelegramCredential(
       return { storedIn: 'keyring' }
     }
   }
-  // Mark the file as authoritative before writing it. If the write fails,
-  // subsequent reads fail closed instead of reviving an older keyring value.
+  // Only make the file authoritative after its write succeeds. Until then,
+  // existing metadata continues to select the last successfully saved value,
+  // so a failed fallback cannot revive an older file credential.
+  fileWriter(cred)
   writeStorageMetadata('file')
-  writeFileCredential(cred)
   if (impl) {
     try {
       impl.deletePassword(KEYRING_SERVICE, KEYRING_ACCOUNT)

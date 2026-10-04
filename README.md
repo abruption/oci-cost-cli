@@ -199,7 +199,7 @@ npx oci-cost-cli list-cron
 npx oci-cost-cli uninstall-cron --cron "0 0 15 * *" -- report --preset free-tier
 ```
 
-Scheduled argv is serialized for both cron and `sh`: literal percent signs are preserved instead of becoming cron input separators, and line breaks are rejected before the crontab is read or written.
+Scheduled argv is serialized for both cron and `sh`: literal percent signs are preserved instead of becoming cron input separators, and line breaks are rejected before the crontab is read or written. Reinstalling or uninstalling also recognizes entries created by older versions with the previous percent serialization, so they are migrated or removed instead of left behind.
 
 `--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything. **Avoid passing `--telegram-token`/`--telegram-chat-id` to `install-cron`** — anything after `--` is serialized into the crontab line, so the token would remain readable via `crontab -l`, defeating the keyring/`0600`-file storage model described below. `install-cron` warns loudly if it detects `--telegram-token` in the scheduled command; use `config set-telegram` instead and let `report` read the stored credential.
 

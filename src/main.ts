@@ -29,7 +29,7 @@ import { queryMultiProfile, monthRange, lastMonthRange } from './usage.js'
 import { applyFilters, freeTierOffenders, isPresetName, PRESET_NAMES } from './presets.js'
 import { renderProfileSection, renderFreeTierSummary } from './render.js'
 import { sendTelegram } from './telegram.js'
-import { installCronJob, uninstallCronJob, listCronJobs, cronQuoteArg } from './cron-install.js'
+import { installCronJob, uninstallCronJob, listCronJobs, cronQuoteArg, shellQuoteArg } from './cron-install.js'
 import {
   saveTelegramCredential,
   loadTelegramCredential,
@@ -355,6 +355,22 @@ export function buildScheduledCommand(
   return [execPath, scriptPath, ...trailingArgs].map(cronQuoteArg).join(' ')
 }
 
+/** Reconstructs entries written before percent-safe cron serialization so
+ *  install/uninstall can migrate or remove them without leaving duplicates. */
+export function buildLegacyScheduledCommand(
+  trailingArgs: string[],
+  execPath: string = process.execPath,
+  scriptPath: string = process.argv[1] ?? '',
+): string {
+  return [execPath, scriptPath, ...trailingArgs].map(shellQuoteArg).join(' ')
+}
+
+interface ParsedCronArgs {
+  cronExpr: string
+  command: string
+  legacyCommand: string
+}
+
 /** Flags recognized by `install-cron`/`uninstall-cron`'s own parsing loop
  *  (everything before the `--` separator). */
 const CRON_FLAGS = new Set(['--cron', '--dry-run'])
@@ -366,7 +382,7 @@ const CRON_FLAGS = new Set(['--cron', '--dry-run'])
  * a genuinely unrecognized flag or a value-consuming flag that would
  * swallow another recognized flag. Exported for direct unit testing.
  */
-export function parseCronArgs(argv: string[], subcommandName: string): { cronExpr: string; command: string } | null {
+export function parseCronArgs(argv: string[], subcommandName: string): ParsedCronArgs | null {
   let cronExpr: string | null = null
   let sepIndex = -1
   for (let i = 0; i < argv.length; i++) {
@@ -388,7 +404,11 @@ export function parseCronArgs(argv: string[], subcommandName: string): { cronExp
     return null
   }
   const trailing = argv.slice(sepIndex + 1)
-  return { cronExpr, command: buildScheduledCommand(trailing) }
+  return {
+    cronExpr,
+    command: buildScheduledCommand(trailing),
+    legacyCommand: buildLegacyScheduledCommand(trailing),
+  }
 }
 
 /** True when the trailing `-- <subcommand> [flags]` scheduled by
@@ -415,7 +435,7 @@ async function runInstallCron(argv: string[]): Promise<number> {
     )
   }
 
-  let parsed: { cronExpr: string; command: string } | null
+  let parsed: ParsedCronArgs | null
   try {
     parsed = parseCronArgs(argv, 'install-cron')
   } catch (e) {
@@ -423,11 +443,15 @@ async function runInstallCron(argv: string[]): Promise<number> {
     return 1
   }
   if (!parsed) return 1
-  const { cronExpr, command } = parsed
+  const { cronExpr, command, legacyCommand } = parsed
 
   try {
-    const result = installCronJob(cronExpr, command, undefined, dryRun)
-    if (result.alreadyPresent) {
+    const result = installCronJob(cronExpr, command, undefined, dryRun, [legacyCommand])
+    if (result.migratedLegacy && result.dryRun) {
+      console.log(`[dry-run] would migrate legacy cron entry to: ${result.line}`)
+    } else if (result.migratedLegacy) {
+      console.log(`✓ migrated legacy cron entry: ${result.line}`)
+    } else if (result.alreadyPresent) {
       console.log(`✓ already scheduled: ${result.line}`)
     } else if (result.dryRun) {
       console.log(`[dry-run] would add to crontab: ${result.line}`)
@@ -444,7 +468,7 @@ async function runInstallCron(argv: string[]): Promise<number> {
 async function runUninstallCron(argv: string[]): Promise<number> {
   const dryRun = argv.includes('--dry-run')
 
-  let parsed: { cronExpr: string; command: string } | null
+  let parsed: ParsedCronArgs | null
   try {
     parsed = parseCronArgs(argv, 'uninstall-cron')
   } catch (e) {
@@ -452,10 +476,10 @@ async function runUninstallCron(argv: string[]): Promise<number> {
     return 1
   }
   if (!parsed) return 1
-  const { cronExpr, command } = parsed
+  const { cronExpr, command, legacyCommand } = parsed
 
   try {
-    const result = uninstallCronJob(cronExpr, command, undefined, dryRun)
+    const result = uninstallCronJob(cronExpr, command, undefined, dryRun, [legacyCommand])
     if (!result.found) {
       console.log(`no matching cron line found — nothing to remove: ${result.line}`)
     } else if (result.dryRun) {
