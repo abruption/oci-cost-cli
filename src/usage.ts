@@ -1,4 +1,5 @@
 import { ociRequest } from './signer.js'
+import type { OciResponse } from './signer.js'
 import type {
   AggregatedLineItem,
   Profile,
@@ -22,7 +23,7 @@ export type OciRequestFn = (
   host: string,
   path: string,
   body?: unknown,
-) => Promise<{ status: number; body: string }>
+) => Promise<Omit<OciResponse, 'headers'> & { headers?: OciResponse['headers'] }>
 
 export function usageApiHost(profile: Profile): string {
   return `usageapi.${profile.region}.oci.oraclecloud.com`
@@ -89,24 +90,42 @@ async function fetchUsageItems(
     queryType,
   }
 
-  const res = await requestFn(profile, 'POST', host, USAGE_PATH, body)
-  if (res.status !== 200) {
-    return { items: [], failed: true, status: res.status }
-  }
-  const parsed = JSON.parse(res.body) as { items?: unknown[] }
-  const items: UsageLineItem[] = (parsed.items ?? []).map((raw) => {
-    const r = raw as Record<string, unknown>
-    return {
-      service: (r.service as string) ?? null,
-      skuName: (r.skuName as string) ?? null,
-      skuPartNumber: (r.skuPartNumber as string) ?? null,
-      unit: (r.unit as string) ?? null,
-      computedQuantity: (r.computedQuantity as number) ?? null,
-      computedAmount: (r.computedAmount as number) ?? null,
-      currency: (r.currency as string) ?? null,
+  const items: UsageLineItem[] = []
+  const seenPageTokens = new Set<string>()
+  let path = USAGE_PATH
+
+  for (;;) {
+    const res = await requestFn(profile, 'POST', host, path, body)
+    if (res.status !== 200) {
+      return { items: [], failed: true, status: res.status }
     }
-  })
-  return { items, failed: false, status: res.status }
+    const parsed = JSON.parse(res.body) as { items?: unknown[] }
+    items.push(
+      ...(parsed.items ?? []).map((raw) => {
+        const r = raw as Record<string, unknown>
+        return {
+          service: (r.service as string) ?? null,
+          skuName: (r.skuName as string) ?? null,
+          skuPartNumber: (r.skuPartNumber as string) ?? null,
+          unit: (r.unit as string) ?? null,
+          computedQuantity: (r.computedQuantity as number) ?? null,
+          computedAmount: (r.computedAmount as number) ?? null,
+          currency: (r.currency as string) ?? null,
+        }
+      }),
+    )
+
+    const nextPageValue = Object.entries(res.headers ?? {}).find(
+      ([name]) => name.toLowerCase() === 'opc-next-page',
+    )?.[1]
+    const nextPage = Array.isArray(nextPageValue) ? nextPageValue[0] : nextPageValue
+    if (!nextPage) return { items, failed: false, status: res.status }
+    if (seenPageTokens.has(nextPage)) {
+      throw new Error(`${queryType} API returned a repeated opc-next-page token`)
+    }
+    seenPageTokens.add(nextPage)
+    path = `${USAGE_PATH}?page=${encodeURIComponent(nextPage)}`
+  }
 }
 
 export interface AggregationResult {

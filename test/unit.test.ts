@@ -4,12 +4,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createVerify, createPublicKey } from 'node:crypto'
-import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-import { parseOciConfig } from '../src/config.js'
+import { parseOciConfig, readPrivateKey, resolveKeyFilePath } from '../src/config.js'
 import { signRequest } from '../src/signer.js'
 import {
   aggregateUsageAndCost,
@@ -21,13 +21,21 @@ import {
   type OciRequestFn,
 } from '../src/usage.js'
 import { applyFilters, freeTierOffenders } from '../src/presets.js'
-import { isValidCronExpression, installCronJob, uninstallCronJob, listCronJobs, shellQuoteArg } from '../src/cron-install.js'
+import {
+  isValidCronExpression,
+  installCronJob,
+  uninstallCronJob,
+  listCronJobs,
+  shellQuoteArg,
+  cronQuoteArg,
+} from '../src/cron-install.js'
 import {
   saveTelegramCredential,
   loadTelegramCredential,
   deleteTelegramCredential,
   maskToken,
   configFilePath,
+  storageMetadataPath,
   type KeyringImpl,
 } from '../src/credentials.js'
 import { fetchLatestVersion, compareVersions } from '../src/update.js'
@@ -36,12 +44,15 @@ import {
   resolveHelpTarget,
   resolveVersionRequested,
   buildScheduledCommand,
+  buildLegacyScheduledCommand,
   parseQueryFlags,
   parseCronArgs,
   parseSetTelegramArgs,
   trailingHasPlaintextTelegramTokenRisk,
+  renderText,
+  toTelegramMessage,
 } from '../src/main.js'
-import type { Profile, UsageQueryRange } from '../src/types.js'
+import type { Profile, ProfileUsageResult, UsageQueryRange } from '../src/types.js'
 import {
   generateTestKeyPair,
   SAMPLE_OCI_CONFIG,
@@ -100,6 +111,35 @@ key_file=/home/test/.oci/oci_api_key.pem#not-a-comment
 `
   const { profiles } = parseOciConfig(config)
   assert.equal(profiles.get('DEFAULT')?.keyFile, '/home/test/.oci/oci_api_key.pem#not-a-comment')
+})
+
+test('resolveKeyFilePath expands only the current-user ~/ prefix', () => {
+  assert.equal(
+    resolveKeyFilePath('~/.oci/oci_api_key.pem', '/isolated/home'),
+    join('/isolated/home', '.oci', 'oci_api_key.pem'),
+  )
+  assert.equal(resolveKeyFilePath('/absolute/key.pem', '/isolated/home'), '/absolute/key.pem')
+  assert.equal(resolveKeyFilePath('relative/key.pem', '/isolated/home'), 'relative/key.pem')
+  assert.equal(resolveKeyFilePath('name~with-tilde.pem', '/isolated/home'), 'name~with-tilde.pem')
+  assert.throws(() => resolveKeyFilePath('~otheruser/key.pem', '/isolated/home'), /unsupported key_file path/)
+})
+
+test('readPrivateKey resolves the OCI-documented ~/.oci path against an isolated home', (t) => {
+  const home = withTmpHome(t)
+  const keyDir = join(home, '.oci')
+  const keyPath = join(keyDir, 'oci_api_key.pem')
+  mkdirSync(keyDir, { recursive: true })
+  writeFileSync(keyPath, 'disposable-private-key-fixture')
+
+  const profile: Profile = {
+    name: 'DEFAULT',
+    user: 'user',
+    fingerprint: 'fingerprint',
+    tenancy: 'tenancy',
+    region: 'region',
+    keyFile: '~/.oci/oci_api_key.pem',
+  }
+  assert.equal(readPrivateKey(profile), 'disposable-private-key-fixture')
 })
 
 // --- signer.ts -------------------------------------------------------------
@@ -292,6 +332,65 @@ test('filterByServices composes with a preset (AND semantics)', () => {
   assert.ok(filtered.every((i) => i.service === 'Virtual Cloud Network'))
 })
 
+// --- free-tier rendering --------------------------------------------------
+
+function profileUsageResult(overrides: Partial<ProfileUsageResult> = {}): ProfileUsageResult {
+  return {
+    profileName: 'DEFAULT',
+    region: 'ap-chuncheon-1',
+    tenancy: 'ocid1.tenancy.test',
+    lineItems: [],
+    outboundGB: 0,
+    costApiFailed: false,
+    ...overrides,
+  }
+}
+
+test('free-tier text output reports USAGE failures instead of a healthy success', () => {
+  const output = renderText(
+    [profileUsageResult({ costApiFailed: true, error: 'Usage API returned HTTP 500' })],
+    parseQueryFlags(['--preset', 'free-tier']),
+  )
+  assert.match(output, /Usage API returned HTTP 500/)
+  assert.doesNotMatch(output, /all items within Free Tier/)
+})
+
+test('free-tier text and Telegram output report an unknown state when COST fails', () => {
+  const results = [profileUsageResult({ costApiFailed: true })]
+  const options = parseQueryFlags(['--preset', 'free-tier'])
+  const text = renderText(results, options)
+  const telegram = toTelegramMessage(results, options)
+  assert.match(text, /Free Tier status is unknown/)
+  assert.match(telegram, /Free Tier status is unknown/)
+  assert.doesNotMatch(text, /all items within Free Tier/)
+  assert.doesNotMatch(telegram, /All items within Free Tier/)
+})
+
+test('free-tier output preserves genuine healthy and positive-cost results', () => {
+  const options = parseQueryFlags(['--preset', 'free-tier'])
+  const healthy = profileUsageResult()
+  assert.match(renderText([healthy], options), /all items within Free Tier/)
+  assert.match(toTelegramMessage([healthy], options), /All items within Free Tier/)
+
+  const { lineItems } = aggregateUsageAndCost(sampleUsageItems(), sampleCostItemsWithOverage())
+  const charged = profileUsageResult({ lineItems })
+  assert.match(renderText([charged], options), /outside Free Tier eligibility/)
+  assert.match(toTelegramMessage([charged], options), /outside Free Tier eligibility/)
+})
+
+test('free-tier mixed-profile output keeps each profile failure separate', () => {
+  const output = renderText(
+    [
+      profileUsageResult({ profileName: 'FAILED', costApiFailed: true, error: 'network unavailable' }),
+      profileUsageResult({ profileName: 'HEALTHY' }),
+    ],
+    parseQueryFlags(['--preset', 'free-tier']),
+  )
+  assert.match(output, /FAILED[\s\S]*network unavailable/)
+  assert.match(output, /HEALTHY[\s\S]*all items within Free Tier/)
+  assert.equal(output.match(/all items within Free Tier/g)?.length, 1)
+})
+
 // --- cron-install.ts -----------------------------------------------------
 
 test('isValidCronExpression accepts standard 5-field expressions', () => {
@@ -374,6 +473,13 @@ test('shellQuoteArg correctly escapes an embedded single quote', () => {
   assert.equal(shellQuoteArg("it's"), "'it'\\''s'")
 })
 
+test('cronQuoteArg removes literal percent signs from the crontab command', () => {
+  const quoted = cronQuoteArg(String.raw`100\% complete`)
+  assert.ok(!quoted.includes('%'))
+  const out = execFileSync('sh', ['-c', `printf '%s' ${quoted}`], { encoding: 'utf8' })
+  assert.equal(out, String.raw`100\% complete`)
+})
+
 test('buildScheduledCommand shell-quotes every token including execPath/scriptPath, and round-trips through sh -c', () => {
   const cmd = buildScheduledCommand(
     ['--service', 'Object Storage', '--dry-run'],
@@ -395,6 +501,59 @@ test('buildScheduledCommand neutralizes a shell-metacharacter-bearing trailing a
   // embedded subshell.
   const out = execFileSync('sh', ['-c', `echo ${cmd}`], { encoding: 'utf8' })
   assert.match(out, /\$\(touch \/tmp\/oci-cost-cli-test-pwned\)/)
+})
+
+test('buildScheduledCommand preserves percent signs and adjacent backslashes after cron and shell parsing', () => {
+  const original = String.raw`path\100%/monthly`
+  const script = 'process.stdout.write(JSON.stringify(process.argv.slice(1)))'
+  const cmd = buildScheduledCommand([script, original], process.execPath, '-e')
+
+  // With no literal percent in the crontab command, cron's percent
+  // preprocessing is a no-op. The shell must still reconstruct the argv.
+  assert.ok(!cmd.includes('%'))
+  const out = execFileSync('sh', ['-c', cmd], { encoding: 'utf8' })
+  assert.deepEqual(JSON.parse(out), [original])
+})
+
+test('installCronJob migrates a legacy percent-bearing entry without leaving a duplicate', () => {
+  const cronExpr = '0 0 15 * *'
+  const args = ['report', '--service', 'Object%Storage']
+  const command = buildScheduledCommand(args, '/usr/bin/node', '/opt/oci-cost-cli/main.js')
+  const legacyCommand = buildLegacyScheduledCommand(args, '/usr/bin/node', '/opt/oci-cost-cli/main.js')
+  let stored = `${cronExpr} ${legacyCommand}\n`
+  const io = {
+    read: () => stored,
+    write: (content: string) => {
+      stored = content
+    },
+  }
+
+  const result = installCronJob(cronExpr, command, io, false, [legacyCommand])
+  assert.equal(result.installed, true)
+  assert.equal(result.migratedLegacy, true)
+  assert.equal(stored, `${cronExpr} ${command}\n`)
+
+  const repeated = installCronJob(cronExpr, command, io, false, [legacyCommand])
+  assert.equal(repeated.alreadyPresent, true)
+  assert.equal(repeated.migratedLegacy, false)
+})
+
+test('cron installation rejects line breaks before reading or writing crontab', () => {
+  let touched = false
+  const io = {
+    read: () => {
+      touched = true
+      return ''
+    },
+    write: () => {
+      touched = true
+    },
+  }
+  assert.equal(isValidCronExpression('0 0 15 *\n*'), false)
+  assert.throws(() => buildScheduledCommand(['report', 'line\nbreak'], '/usr/bin/node', '/app/main.js'), /line breaks/)
+  assert.throws(() => installCronJob('0 0 15 * *', 'oci-cost-cli report\nmalicious', io), /line breaks/)
+  assert.throws(() => uninstallCronJob('0 0 15 * *', 'oci-cost-cli report\rmalicious', io), /line breaks/)
+  assert.equal(touched, false)
 })
 
 test('uninstallCronJob removes the exact previously-installed line and leaves others untouched', () => {
@@ -442,6 +601,25 @@ test('uninstallCronJob honors dryRun — reports found but never calls write()',
   assert.equal(result.removed, false)
   assert.equal(result.dryRun, true)
   assert.equal(wrote, false)
+})
+
+test('uninstallCronJob removes a legacy percent-bearing entry', () => {
+  const cronExpr = '0 0 15 * *'
+  const args = ['report', '--service', 'Object%Storage']
+  const command = buildScheduledCommand(args, '/usr/bin/node', '/opt/oci-cost-cli/main.js')
+  const legacyCommand = buildLegacyScheduledCommand(args, '/usr/bin/node', '/opt/oci-cost-cli/main.js')
+  let stored = `${cronExpr} ${legacyCommand}\n0 3 * * * unrelated-command\n`
+  const io = {
+    read: () => stored,
+    write: (content: string) => {
+      stored = content
+    },
+  }
+
+  const result = uninstallCronJob(cronExpr, command, io, false, [legacyCommand])
+  assert.equal(result.removed, true)
+  assert.equal(result.legacyFound, true)
+  assert.equal(stored, '0 3 * * * unrelated-command\n')
 })
 
 test('listCronJobs returns only lines matching the oci-cost-cli marker', () => {
@@ -557,6 +735,79 @@ test('saveTelegramCredential falls back to file when the keyring is available bu
   // `null`) — falls through to the file that the save above just wrote.
   const loaded = await loadTelegramCredential(withThrowingKeyring)
   assert.deepEqual(loaded, { botToken: 'fallback-token-123', chatId: '222' })
+})
+
+test('newer file credentials remain authoritative when an older keyring later recovers', async (t) => {
+  withTmpHome(t)
+  const impl = fakeKeyring()
+  const withKeyring = async () => impl
+
+  await saveTelegramCredential({ botToken: 'keyring-A', chatId: '111' }, withKeyring)
+  const keyringCannotWrite: KeyringImpl = {
+    setPassword: () => {
+      throw new Error('keyring locked')
+    },
+    getPassword: impl.getPassword,
+    deletePassword: () => {
+      throw new Error('keyring locked')
+    },
+  }
+  await saveTelegramCredential({ botToken: 'file-B', chatId: '222' }, async () => keyringCannotWrite)
+
+  assert.equal(existsSync(storageMetadataPath()), true)
+  assert.deepEqual(await loadTelegramCredential(withKeyring), { botToken: 'file-B', chatId: '222' })
+})
+
+test('failed file fallback keeps the last successful keyring credential authoritative', async (t) => {
+  withTmpHome(t)
+  const impl = fakeKeyring()
+  const withKeyring = async () => impl
+  const previous = { botToken: 'keyring-B', chatId: '222' }
+  await saveTelegramCredential(previous, withKeyring)
+
+  // Model a stale file from an older installation alongside the newer
+  // keyring value, then make both the keyring update and file write fail.
+  mkdirSync(dirname(configFilePath()), { recursive: true })
+  writeFileSync(configFilePath(), JSON.stringify({ botToken: 'file-A', chatId: '111' }))
+  const cannotUpdateKeyring: KeyringImpl = {
+    setPassword: () => {
+      throw new Error('keyring locked')
+    },
+    getPassword: impl.getPassword,
+    deletePassword: impl.deletePassword,
+  }
+  const diskFull = () => {
+    throw new Error('disk full')
+  }
+
+  await assert.rejects(
+    () => saveTelegramCredential({ botToken: 'file-C', chatId: '333' }, async () => cannotUpdateKeyring, diskFull),
+    /disk full/,
+  )
+  assert.deepEqual(await loadTelegramCredential(withKeyring), previous)
+  await assert.rejects(() => loadTelegramCredential(noKeyring), /keyring is unavailable/)
+})
+
+test('newer keyring credentials remove an older file and fail clearly if the keyring disappears', async (t) => {
+  withTmpHome(t)
+  const impl = fakeKeyring()
+
+  await saveTelegramCredential({ botToken: 'file-A', chatId: '111' }, noKeyring)
+  assert.equal(existsSync(configFilePath()), true)
+  await saveTelegramCredential({ botToken: 'keyring-B', chatId: '222' }, async () => impl)
+  assert.equal(existsSync(configFilePath()), false)
+  assert.deepEqual(await loadTelegramCredential(async () => impl), { botToken: 'keyring-B', chatId: '222' })
+  await assert.rejects(() => loadTelegramCredential(noKeyring), /keyring is unavailable/)
+})
+
+test('deletion tombstone prevents a stale keyring credential from reactivating', async (t) => {
+  withTmpHome(t)
+  const impl = fakeKeyring()
+  await saveTelegramCredential({ botToken: 'stale-after-delete', chatId: '333' }, async () => impl)
+
+  // Clear while the keyring is unavailable, then restore the same keyring.
+  await deleteTelegramCredential(noKeyring)
+  assert.equal(await loadTelegramCredential(async () => impl), null)
 })
 
 test('maskToken never reveals the middle of a secret', () => {
@@ -729,6 +980,7 @@ test('parseCronArgs parses --cron plus the trailing scheduled command', () => {
   assert.equal(parsed!.cronExpr, '0 0 15 * *')
   assert.match(parsed!.command, /report/)
   assert.match(parsed!.command, /free-tier/)
+  assert.match(parsed!.legacyCommand, /free-tier/)
 })
 
 test('parseCronArgs rejects a genuinely unrecognized flag before the -- separator', () => {
@@ -779,7 +1031,9 @@ function usageApiItemsBody(items: unknown[]): string {
   return JSON.stringify({ items })
 }
 
-type FakeResponse = { status: number; body: string } | (() => Promise<{ status: number; body: string }>)
+type FakeResponse =
+  | { status: number; body: string; headers?: Record<string, string | string[] | undefined> }
+  | (() => Promise<{ status: number; body: string; headers?: Record<string, string | string[] | undefined> }>)
 
 function fakeOciRequest(responses: {
   USAGE?: FakeResponse
@@ -807,6 +1061,102 @@ test('queryUsageAndCost aggregates a successful USAGE + COST response via the in
   assert.equal(overage!.cost, 4.2)
   assert.ok(result.raw)
   assert.equal(result.raw!.usage.length, sampleUsageItems().length)
+})
+
+test('queryUsageAndCost follows independent USAGE and COST continuation pages', async () => {
+  const usage = sampleUsageItems()
+  const costs = sampleCostItemsWithOverage()
+  const calls: string[] = []
+  const requestFn: OciRequestFn = async (_profile, _method, _host, path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    calls.push(`${queryType}:${path}`)
+    const secondPage = path.includes('?page=')
+    if (queryType === 'USAGE') {
+      return secondPage
+        ? { status: 200, body: usageApiItemsBody(usage.filter((item) => item.skuName === 'Standard - A1')) }
+        : {
+            status: 200,
+            body: usageApiItemsBody(usage.filter((item) => item.skuName !== 'Standard - A1')),
+            headers: { 'Opc-Next-Page': 'usage token/2' },
+          }
+    }
+    return secondPage
+      ? { status: 200, body: usageApiItemsBody(costs.filter((item) => item.skuName === 'Standard - A1')) }
+      : {
+          status: 200,
+          body: usageApiItemsBody(costs.filter((item) => item.skuName !== 'Standard - A1')),
+          headers: { 'opc-next-page': 'cost token/2' },
+        }
+  }
+
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, false)
+  assert.equal(result.raw?.usage.length, usage.length)
+  assert.equal(result.raw?.cost.length, costs.length)
+  assert.equal(result.lineItems.find((item) => item.skuName === 'Standard - A1')?.cost, 4.2)
+  assert.ok(calls.includes('USAGE:/20200107/usage?page=usage%20token%2F2'))
+  assert.ok(calls.includes('COST:/20200107/usage?page=cost%20token%2F2'))
+})
+
+test('queryUsageAndCost follows a continuation token from an empty page', async () => {
+  const requestFn: OciRequestFn = async (_profile, _method, _host, path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    if (queryType === 'COST') return { status: 200, body: usageApiItemsBody(sampleCostItemsAllFree()) }
+    return path.includes('?page=')
+      ? { status: 200, body: usageApiItemsBody(sampleUsageItems()) }
+      : { status: 200, body: usageApiItemsBody([]), headers: { 'opc-next-page': 'next' } }
+  }
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.raw?.usage.length, sampleUsageItems().length)
+})
+
+test('queryUsageAndCost surfaces a later-page USAGE failure instead of returning partial data', async () => {
+  const requestFn: OciRequestFn = async (_profile, _method, _host, path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    if (queryType === 'COST') throw new Error('COST must not be queried')
+    return path.includes('?page=')
+      ? { status: 502, body: '' }
+      : {
+          status: 200,
+          body: usageApiItemsBody(sampleUsageItems().slice(0, 1)),
+          headers: { 'opc-next-page': 'next' },
+        }
+  }
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, true)
+  assert.deepEqual(result.lineItems, [])
+  assert.match(result.error ?? '', /HTTP 502/)
+})
+
+test('queryUsageAndCost discards partial COST pages when a later request fails', async () => {
+  const requestFn: OciRequestFn = async (_profile, _method, _host, path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    if (queryType === 'USAGE') return { status: 200, body: usageApiItemsBody(sampleUsageItems()) }
+    if (path.includes('?page=')) throw new Error('later COST page unavailable')
+    return {
+      status: 200,
+      body: usageApiItemsBody(sampleCostItemsAllFree().slice(0, 1)),
+      headers: { 'opc-next-page': 'next' },
+    }
+  }
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.equal(result.costApiFailed, true)
+  assert.ok(result.lineItems.every((item) => item.cost === null))
+  assert.deepEqual(result.raw?.cost, [])
+})
+
+test('queryUsageAndCost rejects repeated continuation tokens instead of looping forever', async () => {
+  const requestFn: OciRequestFn = async (_profile, _method, _host, _path, body) => {
+    const queryType = (body as { queryType: 'USAGE' | 'COST' }).queryType
+    if (queryType === 'COST') throw new Error('COST must not be queried')
+    return {
+      status: 200,
+      body: usageApiItemsBody([]),
+      headers: { 'opc-next-page': 'same-token' },
+    }
+  }
+  const result = await queryUsageAndCost(TEST_PROFILE, TEST_RANGE, requestFn)
+  assert.match(result.error ?? '', /repeated opc-next-page token/)
 })
 
 test('queryUsageAndCost sets costApiFailed=true and populates `error` when the USAGE API throws (network error)', async () => {

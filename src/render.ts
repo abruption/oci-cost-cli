@@ -72,16 +72,30 @@ export function renderProfileSection(result: ProfileUsageResult): string {
   return lines.join('\n')
 }
 
-export function renderFreeTierSummary(profileName: string, offenders: AggregatedLineItem[]): string {
+export function renderFreeTierSummary(
+  profileName: string,
+  offenders: AggregatedLineItem[],
+  status: { error?: string; costApiFailed?: boolean } = {},
+): string {
+  if (status.error) {
+    return `▸ ${profileName}\n  ${red('✗ ' + status.error)}`
+  }
+  if (offenders.length === 0 && status.costApiFailed) {
+    return `▸ ${profileName}  ${yellow('⚠️  Cost API failed — Free Tier status is unknown')}`
+  }
   if (offenders.length === 0) {
     return `▸ ${profileName}  ${green('✅ all items within Free Tier')}`
   }
   const rows = offenders.map((i) => [i.service, i.skuName, costCell(i)])
-  return [
+  const lines = [
     `▸ ${profileName}  ${yellow(`⚠️  ${offenders.length} item(s) outside Free Tier eligibility`)}`,
     renderTable(['SERVICE', 'SKU', 'COST'], rows)
       .split('\n')
       .map((l) => '  ' + l)
       .join('\n'),
-  ].join('\n')
+  ]
+  if (status.costApiFailed) {
+    lines.push(yellow('  ⚠️  Cost API failed — this offender list may be incomplete'))
+  }
+  return lines.join('\n')
 }

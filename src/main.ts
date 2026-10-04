@@ -29,7 +29,7 @@ import { queryMultiProfile, monthRange, lastMonthRange } from './usage.js'
 import { applyFilters, freeTierOffenders, isPresetName, PRESET_NAMES } from './presets.js'
 import { renderProfileSection, renderFreeTierSummary } from './render.js'
 import { sendTelegram } from './telegram.js'
-import { installCronJob, uninstallCronJob, listCronJobs, shellQuoteArg } from './cron-install.js'
+import { installCronJob, uninstallCronJob, listCronJobs, cronQuoteArg, shellQuoteArg } from './cron-install.js'
 import {
   saveTelegramCredential,
   loadTelegramCredential,
@@ -197,10 +197,15 @@ async function fetchResults(o: QueryOptions): Promise<ProfileUsageResult[]> {
   return queryMultiProfile(profiles, range)
 }
 
-function renderText(results: ProfileUsageResult[], o: QueryOptions): string {
+export function renderText(results: ProfileUsageResult[], o: QueryOptions): string {
   if (o.preset === 'free-tier') {
     return results
-      .map((r) => renderFreeTierSummary(r.profileName, freeTierOffenders(r.lineItems)))
+      .map((r) =>
+        renderFreeTierSummary(r.profileName, freeTierOffenders(r.lineItems), {
+          error: r.error,
+          costApiFailed: r.costApiFailed,
+        }),
+      )
       .join('\n\n')
   }
   const sections = results.map(renderProfileSection)
@@ -241,7 +246,7 @@ async function runQuery(argv: string[]): Promise<number> {
 
 const CURRENCY_EMOJI: Record<string, string> = { USD: '💵', SGD: '💵', EUR: '💶', GBP: '💷', JPY: '💴' }
 
-function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): string {
+export function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): string {
   const rangeLabel = o.lastMonth ? 'Last month' : o.month ? o.month : 'This month'
   const lines: string[] = [`📊 <b>OCI Cost Report</b>  <i>(${escapeHtml(rangeLabel)})</i>`]
 
@@ -259,11 +264,16 @@ function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): stri
       o.preset === 'free-tier' ? freeTierOffenders(r.lineItems) : r.lineItems
 
     if (o.preset === 'free-tier') {
-      lines.push(
-        items.length === 0
-          ? '✅ All items within Free Tier'
-          : `🚨 ${items.length} item(s) outside Free Tier eligibility`,
-      )
+      if (items.length === 0) {
+        lines.push(
+          r.costApiFailed
+            ? '⚠️ <i>Cost API failed — Free Tier status is unknown</i>'
+            : '✅ All items within Free Tier',
+        )
+      } else {
+        lines.push(`🚨 ${items.length} item(s) outside Free Tier eligibility`)
+        if (r.costApiFailed) lines.push('⚠️ <i>Cost API failed — this offender list may be incomplete</i>')
+      }
       for (const it of items.slice(0, 5)) {
         const amount = it.cost !== null && it.currency !== null ? `${it.cost.toFixed(2)} ${it.currency}` : '?'
         lines.push(`   • ${escapeHtml(it.service)} / ${escapeHtml(it.skuName)} — ${escapeHtml(amount)}`)
@@ -332,8 +342,8 @@ async function runReport(argv: string[]): Promise<number> {
  * Builds the shell-safe command line written into the crontab by
  * `install-cron`. Each token (including the node binary and script path,
  * which can themselves contain spaces on some installs) is individually
- * shell-quoted rather than joined with a bare space — see
- * `shellQuoteArg`'s doc comment for why. `execPath`/`scriptPath` are
+ * shell-quoted and cron-safe rather than joined with a bare space — see
+ * `cronQuoteArg`'s doc comment for why. `execPath`/`scriptPath` are
  * injectable (default to the real `process.*` values) so this is directly
  * unit-testable without depending on the actual running process.
  */
@@ -342,7 +352,23 @@ export function buildScheduledCommand(
   execPath: string = process.execPath,
   scriptPath: string = process.argv[1] ?? '',
 ): string {
+  return [execPath, scriptPath, ...trailingArgs].map(cronQuoteArg).join(' ')
+}
+
+/** Reconstructs entries written before percent-safe cron serialization so
+ *  install/uninstall can migrate or remove them without leaving duplicates. */
+export function buildLegacyScheduledCommand(
+  trailingArgs: string[],
+  execPath: string = process.execPath,
+  scriptPath: string = process.argv[1] ?? '',
+): string {
   return [execPath, scriptPath, ...trailingArgs].map(shellQuoteArg).join(' ')
+}
+
+interface ParsedCronArgs {
+  cronExpr: string
+  command: string
+  legacyCommand: string
 }
 
 /** Flags recognized by `install-cron`/`uninstall-cron`'s own parsing loop
@@ -356,7 +382,7 @@ const CRON_FLAGS = new Set(['--cron', '--dry-run'])
  * a genuinely unrecognized flag or a value-consuming flag that would
  * swallow another recognized flag. Exported for direct unit testing.
  */
-export function parseCronArgs(argv: string[], subcommandName: string): { cronExpr: string; command: string } | null {
+export function parseCronArgs(argv: string[], subcommandName: string): ParsedCronArgs | null {
   let cronExpr: string | null = null
   let sepIndex = -1
   for (let i = 0; i < argv.length; i++) {
@@ -378,7 +404,11 @@ export function parseCronArgs(argv: string[], subcommandName: string): { cronExp
     return null
   }
   const trailing = argv.slice(sepIndex + 1)
-  return { cronExpr, command: buildScheduledCommand(trailing) }
+  return {
+    cronExpr,
+    command: buildScheduledCommand(trailing),
+    legacyCommand: buildLegacyScheduledCommand(trailing),
+  }
 }
 
 /** True when the trailing `-- <subcommand> [flags]` scheduled by
@@ -405,7 +435,7 @@ async function runInstallCron(argv: string[]): Promise<number> {
     )
   }
 
-  let parsed: { cronExpr: string; command: string } | null
+  let parsed: ParsedCronArgs | null
   try {
     parsed = parseCronArgs(argv, 'install-cron')
   } catch (e) {
@@ -413,11 +443,15 @@ async function runInstallCron(argv: string[]): Promise<number> {
     return 1
   }
   if (!parsed) return 1
-  const { cronExpr, command } = parsed
+  const { cronExpr, command, legacyCommand } = parsed
 
   try {
-    const result = installCronJob(cronExpr, command, undefined, dryRun)
-    if (result.alreadyPresent) {
+    const result = installCronJob(cronExpr, command, undefined, dryRun, [legacyCommand])
+    if (result.migratedLegacy && result.dryRun) {
+      console.log(`[dry-run] would migrate legacy cron entry to: ${result.line}`)
+    } else if (result.migratedLegacy) {
+      console.log(`✓ migrated legacy cron entry: ${result.line}`)
+    } else if (result.alreadyPresent) {
       console.log(`✓ already scheduled: ${result.line}`)
     } else if (result.dryRun) {
       console.log(`[dry-run] would add to crontab: ${result.line}`)
@@ -434,7 +468,7 @@ async function runInstallCron(argv: string[]): Promise<number> {
 async function runUninstallCron(argv: string[]): Promise<number> {
   const dryRun = argv.includes('--dry-run')
 
-  let parsed: { cronExpr: string; command: string } | null
+  let parsed: ParsedCronArgs | null
   try {
     parsed = parseCronArgs(argv, 'uninstall-cron')
   } catch (e) {
@@ -442,10 +476,10 @@ async function runUninstallCron(argv: string[]): Promise<number> {
     return 1
   }
   if (!parsed) return 1
-  const { cronExpr, command } = parsed
+  const { cronExpr, command, legacyCommand } = parsed
 
   try {
-    const result = uninstallCronJob(cronExpr, command, undefined, dryRun)
+    const result = uninstallCronJob(cronExpr, command, undefined, dryRun, [legacyCommand])
     if (!result.found) {
       console.log(`no matching cron line found — nothing to remove: ${result.line}`)
     } else if (result.dryRun) {

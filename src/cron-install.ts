@@ -31,6 +31,7 @@ function isValidCronField(field: string): boolean {
  * being written into the user's crontab.
  */
 export function isValidCronExpression(expr: string): boolean {
+  if (/[\r\n]/.test(expr)) return false
   const fields = expr.trim().split(/\s+/)
   if (fields.length !== 5) return false
   return fields.every(isValidCronField)
@@ -47,7 +48,22 @@ export function isValidCronExpression(expr: string): boolean {
  * logic simple and avoids having to enumerate "dangerous" characters.
  */
 export function shellQuoteArg(arg: string): string {
+  if (/[\r\n]/.test(arg)) throw new Error('scheduled command arguments must not contain line breaks')
   return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * Quotes one argv token for both cron and the shell. Cron treats a literal
+ * percent sign as a command terminator before `sh -c` sees it, even inside
+ * shell quotes. Expressing percent through POSIX `printf` keeps the crontab
+ * command free of `%` entirely and preserves any adjacent backslashes.
+ */
+export function cronQuoteArg(arg: string): string {
+  return arg.split('%').map(shellQuoteArg).join(`"$(printf '\\045')"`)
+}
+
+function validateCommand(command: string): void {
+  if (/[\r\n]/.test(command)) throw new Error('scheduled command must not contain line breaks')
 }
 
 export interface CrontabIO {
@@ -76,6 +92,8 @@ export const realCrontabIO: CrontabIO = {
 export interface InstallCronResult {
   installed: boolean
   alreadyPresent: boolean
+  /** True when an entry using the pre-percent-safe serialization was removed. */
+  migratedLegacy: boolean
   line: string
   /** True when `dryRun` was requested — `write()` was never called. */
   dryRun: boolean
@@ -94,32 +112,43 @@ export function installCronJob(
   command: string,
   io: CrontabIO = realCrontabIO,
   dryRun = false,
+  legacyCommands: string[] = [],
 ): InstallCronResult {
   if (!isValidCronExpression(cronExpr)) {
     throw new Error(`invalid cron expression: '${cronExpr}' (expected 5 space-separated fields)`)
   }
+  validateCommand(command)
+  legacyCommands.forEach(validateCommand)
 
   const line = `${cronExpr} ${command}`
+  const legacyLines = [...new Set(legacyCommands.map((legacyCommand) => `${cronExpr} ${legacyCommand}`))].filter(
+    (legacyLine) => legacyLine !== line,
+  )
   const existing = io.read()
   const lines = existing.split('\n').filter((l) => l.trim().length > 0)
+  const hasCurrent = lines.includes(line)
+  const hasLegacy = legacyLines.some((legacyLine) => lines.includes(legacyLine))
 
-  if (lines.includes(line)) {
-    return { installed: false, alreadyPresent: true, line, dryRun }
+  if (hasCurrent && !hasLegacy) {
+    return { installed: false, alreadyPresent: true, migratedLegacy: false, line, dryRun }
   }
 
   if (dryRun) {
-    return { installed: false, alreadyPresent: false, line, dryRun: true }
+    return { installed: false, alreadyPresent: hasCurrent, migratedLegacy: hasLegacy, line, dryRun: true }
   }
 
-  lines.push(line)
-  io.write(lines.join('\n') + '\n')
-  return { installed: true, alreadyPresent: false, line, dryRun: false }
+  const updated = lines.filter((existingLine) => !legacyLines.includes(existingLine))
+  if (!hasCurrent) updated.push(line)
+  io.write(updated.join('\n') + '\n')
+  return { installed: !hasCurrent, alreadyPresent: hasCurrent, migratedLegacy: hasLegacy, line, dryRun: false }
 }
 
 export interface UninstallCronResult {
   removed: boolean
-  /** True when the exact `<cronExpr> <command>` line was not found in the crontab. */
+  /** True when the current or legacy `<cronExpr> <command>` line was found. */
   found: boolean
+  /** True when a matching entry used the pre-percent-safe serialization. */
+  legacyFound: boolean
   line: string
   /** True when `dryRun` was requested — `write()` was never called. */
   dryRun: boolean
@@ -137,26 +166,35 @@ export function uninstallCronJob(
   command: string,
   io: CrontabIO = realCrontabIO,
   dryRun = false,
+  legacyCommands: string[] = [],
 ): UninstallCronResult {
   if (!isValidCronExpression(cronExpr)) {
     throw new Error(`invalid cron expression: '${cronExpr}' (expected 5 space-separated fields)`)
   }
+  validateCommand(command)
+  legacyCommands.forEach(validateCommand)
 
   const line = `${cronExpr} ${command}`
+  const legacyLines = [...new Set(legacyCommands.map((legacyCommand) => `${cronExpr} ${legacyCommand}`))].filter(
+    (legacyLine) => legacyLine !== line,
+  )
   const existing = io.read()
   const lines = existing.split('\n').filter((l) => l.trim().length > 0)
+  const hasCurrent = lines.includes(line)
+  const legacyFound = legacyLines.some((legacyLine) => lines.includes(legacyLine))
 
-  if (!lines.includes(line)) {
-    return { removed: false, found: false, line, dryRun }
+  if (!hasCurrent && !legacyFound) {
+    return { removed: false, found: false, legacyFound: false, line, dryRun }
   }
 
   if (dryRun) {
-    return { removed: false, found: true, line, dryRun: true }
+    return { removed: false, found: true, legacyFound, line, dryRun: true }
   }
 
-  const remaining = lines.filter((l) => l !== line)
+  const matchingLines = new Set([line, ...legacyLines])
+  const remaining = lines.filter((existingLine) => !matchingLines.has(existingLine))
   io.write(remaining.length > 0 ? remaining.join('\n') + '\n' : '')
-  return { removed: true, found: true, line, dryRun: false }
+  return { removed: true, found: true, legacyFound, line, dryRun: false }
 }
 
 /**
