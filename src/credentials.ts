@@ -52,6 +52,44 @@ export function configFilePath(): string {
   return join(configDir(), 'config.json')
 }
 
+export function storageMetadataPath(): string {
+  return join(configDir(), 'credential-store.json')
+}
+
+type CredentialBackend = 'keyring' | 'file' | 'deleted'
+
+function readStorageMetadata(): CredentialBackend | null {
+  const path = storageMetadataPath()
+  if (!existsSync(path)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (e) {
+    throw new Error(`cannot read Telegram credential storage metadata: ${e instanceof Error ? e.message : String(e)}`, {
+      cause: e,
+    })
+  }
+  const backend = (parsed as { active?: unknown }).active
+  if (backend !== 'keyring' && backend !== 'file' && backend !== 'deleted') {
+    throw new Error('Telegram credential storage metadata is invalid')
+  }
+  return backend
+}
+
+function writeStorageMetadata(active: CredentialBackend): void {
+  const dir = configDir()
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const path = storageMetadataPath()
+  writeFileSync(path, JSON.stringify({ active }, null, 2) + '\n', { mode: 0o600 })
+  chmodSync(dir, 0o700)
+  chmodSync(path, 0o600)
+}
+
+function removeFileCredential(): void {
+  const path = configFilePath()
+  if (existsSync(path)) rmSync(path)
+}
+
 function readFileCredential(): TelegramCredential | null {
   const path = configFilePath()
   if (!existsSync(path)) return null
@@ -90,7 +128,9 @@ export interface SaveResult {
  *
  * The primary deployment target for `report`/`install-cron` is a headless
  * Linux cron job (no desktop Secret Service running), so the file fallback
- * is expected to be the common path in practice, not an edge case.
+ * is expected to be the common path in practice, not an edge case. A
+ * secret-free metadata file records the authoritative tier so backend
+ * availability changes cannot revive an older credential.
  */
 export async function saveTelegramCredential(
   cred: TelegramCredential,
@@ -98,21 +138,48 @@ export async function saveTelegramCredential(
 ): Promise<SaveResult> {
   const impl = await keyring()
   if (impl) {
+    let savedToKeyring = false
     try {
       impl.setPassword(KEYRING_SERVICE, KEYRING_ACCOUNT, JSON.stringify(cred))
-      return { storedIn: 'keyring' }
+      savedToKeyring = true
     } catch {
       // fall through to file
     }
+    if (savedToKeyring) {
+      writeStorageMetadata('keyring')
+      removeFileCredential()
+      return { storedIn: 'keyring' }
+    }
   }
+  // Mark the file as authoritative before writing it. If the write fails,
+  // subsequent reads fail closed instead of reviving an older keyring value.
+  writeStorageMetadata('file')
   writeFileCredential(cred)
+  if (impl) {
+    try {
+      impl.deletePassword(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    } catch {
+      // Metadata keeps any inaccessible stale keyring value from winning.
+    }
+  }
   return { storedIn: 'file' }
 }
 
 export async function loadTelegramCredential(
   keyring: () => Promise<KeyringImpl | null> = loadRealKeyring,
 ): Promise<TelegramCredential | null> {
+  const activeBackend = readStorageMetadata()
+  if (activeBackend === 'deleted') return null
+  if (activeBackend === 'file') {
+    const credential = readFileCredential()
+    if (!credential) throw new Error('Telegram credential metadata points to a missing or invalid config file')
+    return credential
+  }
+
   const impl = await keyring()
+  if (activeBackend === 'keyring' && !impl) {
+    throw new Error('Telegram credential is stored in the OS keyring, but the keyring is unavailable')
+  }
   if (impl) {
     const raw = impl.getPassword(KEYRING_SERVICE, KEYRING_ACCOUNT)
     if (raw) {
@@ -120,20 +187,33 @@ export async function loadTelegramCredential(
         const parsed = JSON.parse(raw) as Partial<TelegramCredential>
         if (parsed.botToken && parsed.chatId) return { botToken: parsed.botToken, chatId: parsed.chatId }
       } catch {
-        // fall through to file
+        if (activeBackend === 'keyring') throw new Error('Telegram credential in the OS keyring is invalid')
       }
     }
+    if (activeBackend === 'keyring') {
+      throw new Error('Telegram credential metadata points to the OS keyring, but no credential was found')
+    }
   }
+  // No metadata means this is a legacy installation. Preserve the original
+  // keyring-first lookup until the next save records an authoritative tier.
   return readFileCredential()
 }
 
 export async function deleteTelegramCredential(
   keyring: () => Promise<KeyringImpl | null> = loadRealKeyring,
 ): Promise<void> {
+  // Persist a tombstone first so an inaccessible stale backend can never
+  // reactivate after the user clears the credential.
+  writeStorageMetadata('deleted')
+  removeFileCredential()
   const impl = await keyring()
-  if (impl) impl.deletePassword(KEYRING_SERVICE, KEYRING_ACCOUNT)
-  const path = configFilePath()
-  if (existsSync(path)) rmSync(path)
+  if (impl) {
+    try {
+      impl.deletePassword(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    } catch {
+      // The tombstone remains authoritative even if the OS store is locked.
+    }
+  }
 }
 
 /** Probes which storage tier a save would use, without writing anything —

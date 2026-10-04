@@ -29,7 +29,7 @@ import { queryMultiProfile, monthRange, lastMonthRange } from './usage.js'
 import { applyFilters, freeTierOffenders, isPresetName, PRESET_NAMES } from './presets.js'
 import { renderProfileSection, renderFreeTierSummary } from './render.js'
 import { sendTelegram } from './telegram.js'
-import { installCronJob, uninstallCronJob, listCronJobs, shellQuoteArg } from './cron-install.js'
+import { installCronJob, uninstallCronJob, listCronJobs, cronQuoteArg } from './cron-install.js'
 import {
   saveTelegramCredential,
   loadTelegramCredential,
@@ -197,10 +197,15 @@ async function fetchResults(o: QueryOptions): Promise<ProfileUsageResult[]> {
   return queryMultiProfile(profiles, range)
 }
 
-function renderText(results: ProfileUsageResult[], o: QueryOptions): string {
+export function renderText(results: ProfileUsageResult[], o: QueryOptions): string {
   if (o.preset === 'free-tier') {
     return results
-      .map((r) => renderFreeTierSummary(r.profileName, freeTierOffenders(r.lineItems)))
+      .map((r) =>
+        renderFreeTierSummary(r.profileName, freeTierOffenders(r.lineItems), {
+          error: r.error,
+          costApiFailed: r.costApiFailed,
+        }),
+      )
       .join('\n\n')
   }
   const sections = results.map(renderProfileSection)
@@ -241,7 +246,7 @@ async function runQuery(argv: string[]): Promise<number> {
 
 const CURRENCY_EMOJI: Record<string, string> = { USD: '💵', SGD: '💵', EUR: '💶', GBP: '💷', JPY: '💴' }
 
-function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): string {
+export function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): string {
   const rangeLabel = o.lastMonth ? 'Last month' : o.month ? o.month : 'This month'
   const lines: string[] = [`📊 <b>OCI Cost Report</b>  <i>(${escapeHtml(rangeLabel)})</i>`]
 
@@ -259,11 +264,16 @@ function toTelegramMessage(results: ProfileUsageResult[], o: QueryOptions): stri
       o.preset === 'free-tier' ? freeTierOffenders(r.lineItems) : r.lineItems
 
     if (o.preset === 'free-tier') {
-      lines.push(
-        items.length === 0
-          ? '✅ All items within Free Tier'
-          : `🚨 ${items.length} item(s) outside Free Tier eligibility`,
-      )
+      if (items.length === 0) {
+        lines.push(
+          r.costApiFailed
+            ? '⚠️ <i>Cost API failed — Free Tier status is unknown</i>'
+            : '✅ All items within Free Tier',
+        )
+      } else {
+        lines.push(`🚨 ${items.length} item(s) outside Free Tier eligibility`)
+        if (r.costApiFailed) lines.push('⚠️ <i>Cost API failed — this offender list may be incomplete</i>')
+      }
       for (const it of items.slice(0, 5)) {
         const amount = it.cost !== null && it.currency !== null ? `${it.cost.toFixed(2)} ${it.currency}` : '?'
         lines.push(`   • ${escapeHtml(it.service)} / ${escapeHtml(it.skuName)} — ${escapeHtml(amount)}`)
@@ -332,8 +342,8 @@ async function runReport(argv: string[]): Promise<number> {
  * Builds the shell-safe command line written into the crontab by
  * `install-cron`. Each token (including the node binary and script path,
  * which can themselves contain spaces on some installs) is individually
- * shell-quoted rather than joined with a bare space — see
- * `shellQuoteArg`'s doc comment for why. `execPath`/`scriptPath` are
+ * shell-quoted and cron-safe rather than joined with a bare space — see
+ * `cronQuoteArg`'s doc comment for why. `execPath`/`scriptPath` are
  * injectable (default to the real `process.*` values) so this is directly
  * unit-testable without depending on the actual running process.
  */
@@ -342,7 +352,7 @@ export function buildScheduledCommand(
   execPath: string = process.execPath,
   scriptPath: string = process.argv[1] ?? '',
 ): string {
-  return [execPath, scriptPath, ...trailingArgs].map(shellQuoteArg).join(' ')
+  return [execPath, scriptPath, ...trailingArgs].map(cronQuoteArg).join(' ')
 }
 
 /** Flags recognized by `install-cron`/`uninstall-cron`'s own parsing loop

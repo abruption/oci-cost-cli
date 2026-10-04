@@ -78,6 +78,17 @@ export function loadOciConfig(path: string = defaultConfigPath()): ConfigParseRe
   return parseOciConfig(content)
 }
 
+/** Expands the OCI-documented `~/` prefix without applying shell-style
+ * expansion to embedded tildes or another user's home directory. */
+export function resolveKeyFilePath(path: string, home: string = homedir()): string {
+  if (path === '~') return home
+  if (path.startsWith('~/')) return join(home, path.slice(2))
+  if (path.startsWith('~')) {
+    throw new Error(`unsupported key_file path '${path}' — use ~/ for the current user's home directory`)
+  }
+  return path
+}
+
 export function readPrivateKey(profile: Profile): string {
   if (profile.passPhrase) {
     throw new Error(
@@ -85,5 +96,5 @@ export function readPrivateKey(profile: Profile): string {
         'encrypted keys are not yet supported, use an unencrypted key_file',
     )
   }
-  return readFileSync(profile.keyFile, 'utf8')
+  return readFileSync(resolveKeyFilePath(profile.keyFile), 'utf8')
 }

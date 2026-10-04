@@ -63,7 +63,7 @@ npx oci-cost-cli --output json
 npx oci-cost-cli --json
 ```
 
-No separate auth setup — it reads the same `~/.oci/config` (`user`, `fingerprint`, `tenancy`, `region`, `key_file`) that the official OCI SDKs and CLI already use. If you have `oci setup config` working, `oci-cost-cli` works.
+No separate auth setup — it reads the same `~/.oci/config` (`user`, `fingerprint`, `tenancy`, `region`, `key_file`) that the official OCI SDKs and CLI already use. The standard `key_file=~/.oci/oci_api_key.pem` form is supported. If you have `oci setup config` working, `oci-cost-cli` works.
 
 ## Multiple tenancies at once
 
@@ -161,7 +161,7 @@ npx oci-cost-cli --output json --raw --profile DEFAULT
 
 `--raw` has genuinely caught a real OCI quirk: some Cost API line items come back with a **blank-string** (not empty/absent) `currency`, which the aggregation layer correctly treats as "no cost data" (`cost: null`) — `raw` is what lets you see *why* a `lineItems` entry has a null cost instead of just the null.
 
-`--raw` only affects `--output json`; it's a no-op in the default text output.
+`--raw` only affects `--output json`; it's a no-op in the default text output. USAGE and COST continuation pages are followed independently, so both raw arrays contain the complete paginated response.
 
 ## Preview before you commit: --dry-run
 
@@ -199,7 +199,9 @@ npx oci-cost-cli list-cron
 npx oci-cost-cli uninstall-cron --cron "0 0 15 * *" -- report --preset free-tier
 ```
 
-`--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything. **Avoid passing `--telegram-token`/`--telegram-chat-id` to `install-cron`** — anything after `--` is written verbatim into the crontab line, so the token would end up in plaintext there (readable via `crontab -l`), defeating the keyring/`0600`-file storage model described below. `install-cron` warns loudly if it detects `--telegram-token` in the scheduled command; use `config set-telegram` instead and let `report` read the stored credential.
+Scheduled argv is serialized for both cron and `sh`: literal percent signs are preserved instead of becoming cron input separators, and line breaks are rejected before the crontab is read or written.
+
+`--telegram-token`/`--telegram-chat-id` flags are also accepted directly on `report`, for one-off use without saving anything. **Avoid passing `--telegram-token`/`--telegram-chat-id` to `install-cron`** — anything after `--` is serialized into the crontab line, so the token would remain readable via `crontab -l`, defeating the keyring/`0600`-file storage model described below. `install-cron` warns loudly if it detects `--telegram-token` in the scheduled command; use `config set-telegram` instead and let `report` read the stored credential.
 
 ## Checking for updates
 
@@ -226,8 +228,8 @@ Bare `update` never touches your global npm packages — same `--dry-run`-by-def
 
 ## Security notes
 
-- Telegram bot token/chat ID: OS keyring first (macOS Keychain / Linux Secret Service via [`@napi-rs/keyring`](https://www.npmjs.com/package/@napi-rs/keyring)), falling back to `~/.config/oci-cost-cli/config.json` with `0600`/`0700` permissions — the same trust model as `~/.aws/credentials` or `~/.npmrc`, not application-level encryption (a cipher whose key must also live on disk for unattended cron access provides no real additional security over plain file permissions).
-- `~/.oci/config` private keys are read as-is; encrypted keys (`pass_phrase` set) are not yet supported.
+- Telegram bot token/chat ID: OS keyring first (macOS Keychain / Linux Secret Service via [`@napi-rs/keyring`](https://www.npmjs.com/package/@napi-rs/keyring)), falling back to `~/.config/oci-cost-cli/config.json` with `0600`/`0700` permissions — the same trust model as `~/.aws/credentials` or `~/.npmrc`, not application-level encryption (a cipher whose key must also live on disk for unattended cron access provides no real additional security over plain file permissions). A separate secret-free `credential-store.json` records which backend is authoritative so an older credential cannot reappear when keyring availability changes.
+- `~/.oci/config` private-key paths support the current-user `~/` prefix. Encrypted keys (`pass_phrase` set) are not yet supported.
 
 ## Contributing
 

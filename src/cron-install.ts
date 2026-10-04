@@ -31,6 +31,7 @@ function isValidCronField(field: string): boolean {
  * being written into the user's crontab.
  */
 export function isValidCronExpression(expr: string): boolean {
+  if (/[\r\n]/.test(expr)) return false
   const fields = expr.trim().split(/\s+/)
   if (fields.length !== 5) return false
   return fields.every(isValidCronField)
@@ -47,7 +48,22 @@ export function isValidCronExpression(expr: string): boolean {
  * logic simple and avoids having to enumerate "dangerous" characters.
  */
 export function shellQuoteArg(arg: string): string {
+  if (/[\r\n]/.test(arg)) throw new Error('scheduled command arguments must not contain line breaks')
   return `'${arg.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * Quotes one argv token for both cron and the shell. Cron treats a literal
+ * percent sign as a command terminator before `sh -c` sees it, even inside
+ * shell quotes. Expressing percent through POSIX `printf` keeps the crontab
+ * command free of `%` entirely and preserves any adjacent backslashes.
+ */
+export function cronQuoteArg(arg: string): string {
+  return arg.split('%').map(shellQuoteArg).join(`"$(printf '\\045')"`)
+}
+
+function validateCommand(command: string): void {
+  if (/[\r\n]/.test(command)) throw new Error('scheduled command must not contain line breaks')
 }
 
 export interface CrontabIO {
@@ -98,6 +114,7 @@ export function installCronJob(
   if (!isValidCronExpression(cronExpr)) {
     throw new Error(`invalid cron expression: '${cronExpr}' (expected 5 space-separated fields)`)
   }
+  validateCommand(command)
 
   const line = `${cronExpr} ${command}`
   const existing = io.read()
@@ -141,6 +158,7 @@ export function uninstallCronJob(
   if (!isValidCronExpression(cronExpr)) {
     throw new Error(`invalid cron expression: '${cronExpr}' (expected 5 space-separated fields)`)
   }
+  validateCommand(command)
 
   const line = `${cronExpr} ${command}`
   const existing = io.read()

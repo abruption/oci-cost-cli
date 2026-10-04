@@ -13,6 +13,12 @@ export interface SignedRequestParts {
   headers: Record<string, string>
 }
 
+export interface OciResponse {
+  status: number
+  body: string
+  headers: Record<string, string | string[] | undefined>
+}
+
 /**
  * Builds the OCI API Signature Version 1 signing string and the resulting
  * `Authorization` header. Pure/deterministic given the same inputs — no I/O,
@@ -68,7 +74,7 @@ export function ociRequest(
   host: string,
   path: string,
   body?: unknown,
-): Promise<{ status: number; body: string }> {
+): Promise<OciResponse> {
   const privateKeyPem = readPrivateKey(profile)
   const bodyStr = body === undefined ? undefined : JSON.stringify(body)
   const date = new Date().toUTCString()
@@ -89,7 +95,13 @@ export function ociRequest(
       (res) => {
         const chunks: Buffer[] = []
         res.on('data', (c: Buffer) => chunks.push(c))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString('utf8'),
+            headers: res.headers,
+          }),
+        )
       },
     )
     req.on('error', reject)
