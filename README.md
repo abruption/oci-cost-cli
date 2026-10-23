@@ -3,7 +3,7 @@
 # oci-cost-cli
 
 [![npm version](https://img.shields.io/npm/v/oci-cost-cli?color=cb3837&logo=npm)](https://www.npmjs.com/package/oci-cost-cli)
-[![npm downloads](https://img.shields.io/npm/dm/oci-cost-cli?color=cb3837&logo=npm)](https://www.npmjs.com/package/oci-cost-cli)
+[![npm downloads (last 18 months)](https://img.shields.io/npm/d18m/oci-cost-cli?label=downloads%20%2818%20months%29&color=cb3837&logo=npm)](https://www.npmjs.com/package/oci-cost-cli)
 [![CI](https://github.com/abruption/oci-cost-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/abruption/oci-cost-cli/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![node](https://img.shields.io/node/v/oci-cost-cli?color=339933&logo=node.js)](https://www.npmjs.com/package/oci-cost-cli)
