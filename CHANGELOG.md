@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/abruption/oci-cost-cli/compare/v0.5.1...v1.0.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* require patched Node runtimes and update brace-expansion ([#64](https://github.com/abruption/oci-cost-cli/issues/64))
+
+### Bug Fixes
+
+* require patched Node runtimes and update brace-expansion ([#64](https://github.com/abruption/oci-cost-cli/issues/64)) ([309cfee](https://github.com/abruption/oci-cost-cli/commit/309cfee87682586d7d8bcba34ba04554398c9c1d))
+
 ## [0.5.1](https://github.com/abruption/oci-cost-cli/compare/v0.5.0...v0.5.1) (2026-10-04)
 
 
