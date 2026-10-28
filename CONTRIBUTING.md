@@ -21,8 +21,9 @@ npm run check
 npm test
 ```
 
-CI validates supported Node.js versions on Linux and Node.js 22 on macOS and
-Windows. Pull requests must pass the required CI checks before merge.
+CI validates the exact minimum supported Node.js versions (22.23.4, 24.22.1,
+and 26.12.1) on Linux and Node.js 24.22.1 on macOS and Windows. Use a supported
+patched runtime for local development (see the README). Pull requests must pass the required CI checks before merge.
 
 ## Releases
 

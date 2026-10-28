@@ -47,6 +47,13 @@ OCI's Usage API (`request-summarized-usages`) is the only reliable way to check 
 
 ## Quick start
 
+Requires Node.js **22.23.4+ (22.x), 24.22.1+ (24.x), or 26.12.1+ (26.x)**.
+Use the latest security-patched release on one of these supported lines. Node.js
+18/20 and odd-numbered lines are no longer supported; upgrade Node.js before
+upgrading this CLI. These minimums include the [October 2026 Node.js security
+fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases);
+installing this package does not upgrade your Node.js runtime.
+
 ```bash
 # Run once, no install — reads your existing ~/.oci/config
 npx oci-cost-cli
